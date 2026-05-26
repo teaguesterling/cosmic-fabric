@@ -58,6 +58,15 @@ def handle(req):
             if _pat_cache is None:
                 _pat_cache = FAB.list_patterns()
         return {"patterns": _pat_cache}
+    if op == "models":
+        return {"models": FAB.list_models()}
+    if op == "status":
+        pol = core.load_policy()
+        return {"serve": FAB.alive(),
+                "loaded": core.loaded_models(pol["ollama"]["url"]),
+                "vram": core.gpu_vram(),
+                "default_model": pol["default"].get("model"),
+                "default_vendor": pol["default"].get("vendor")}
     if op == "run":
         pat = req.get("pattern")
         if not pat:

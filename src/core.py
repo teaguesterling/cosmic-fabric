@@ -104,6 +104,15 @@ class FabricClient:
             self.log(f"list_patterns failed: {e}")
             return []
 
+    def list_models(self):
+        """Available models. /models/names returns {"models":[...]}."""
+        try:
+            d = self._get("/models/names")
+            return d.get("models", d) if isinstance(d, dict) else d
+        except Exception as e:
+            self.log(f"list_models failed: {e}")
+            return []
+
     def run(self, pattern, user_input, model, vendor, variables=None, options=None, timeout=600):
         """POST /chat (SSE) → accumulated text. Raises on a fabric error event."""
         body = {
@@ -147,15 +156,46 @@ class FabricClient:
         return "".join(out).strip()
 
 
-# ---------- ollama placement -----------------------------------------------
+# ---------- ollama placement / status --------------------------------------
+def _ollama_ps(ollama_url):
+    with urllib.request.urlopen(ollama_url.rstrip("/") + "/api/ps", timeout=5) as r:
+        return json.load(r).get("models", [])
+
+
 def gpu_placement(model, ollama_url):
     try:
-        with urllib.request.urlopen(ollama_url.rstrip("/") + "/api/ps", timeout=5) as r:
-            data = json.load(r)
-        for m in data.get("models", []):
+        for m in _ollama_ps(ollama_url):
             if model in (m.get("model"), m.get("name")):
                 s, v = m.get("size", 0), m.get("size_vram", 0)
                 return (100.0 * v / s) if s else None
     except Exception:
         pass
     return None
+
+
+def loaded_models(ollama_url):
+    """What's resident now: [{model, gpu_pct, ctx, vram_mib}]."""
+    out = []
+    try:
+        for m in _ollama_ps(ollama_url):
+            s, v = m.get("size", 0), m.get("size_vram", 0)
+            out.append({
+                "model": m.get("name") or m.get("model"),
+                "gpu_pct": round(100.0 * v / s, 1) if s else None,
+                "ctx": m.get("context_length"),
+                "vram_mib": round(v / 1048576),
+            })
+    except Exception:
+        pass
+    return out
+
+
+def gpu_vram():
+    """{used, free, total} MiB via nvidia-smi, or None."""
+    try:
+        r = subprocess.run(["nvidia-smi", "--query-gpu=memory.used,memory.free,memory.total",
+                            "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=5)
+        used, free, total = (int(x.strip()) for x in r.stdout.splitlines()[0].split(","))
+        return {"used": used, "free": free, "total": total}
+    except Exception:
+        return None
