@@ -104,6 +104,16 @@ class FabricClient:
             self.log(f"list_patterns failed: {e}")
             return []
 
+    def assemble_prompt(self, pattern, user_input, variables=None):
+        """Render a pattern's prompt WITHOUT executing it — for handing off to
+        an interactive agent (Claude Desktop/Code). Returns the pattern's system
+        prompt (with {{vars}} substituted) followed by the input. No model run."""
+        d = self._get("/patterns/" + pattern)
+        sysp = d.get("Pattern", "") if isinstance(d, dict) else str(d)
+        for k, v in (variables or {}).items():
+            sysp = sysp.replace("{{" + k + "}}", str(v))
+        return (sysp.rstrip() + "\n\n" + (user_input or "")).strip()
+
     def list_models(self):
         """Available models. /models/names returns {"models":[...]}."""
         try:

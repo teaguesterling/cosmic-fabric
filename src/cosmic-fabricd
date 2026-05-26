@@ -76,6 +76,18 @@ def handle(req):
         return {"patterns": _pat_cache}
     if op == "models":
         return {"models": FAB.list_models()}
+    if op == "assemble":
+        pat = req.get("pattern")
+        if not pat:
+            return {"error": "missing pattern"}
+        pol = core.load_policy()
+        try:
+            prompt = FAB.assemble_prompt(pat, req.get("input", ""), req.get("variables"))
+        except Exception as e:
+            log(f"assemble error: {e}")
+            return {"error": str(e)}
+        log(f"assemble pattern={pat} → {len(prompt)} chars")
+        return {"prompt": prompt}
     if op == "status":
         pol = core.load_policy()
         return {"serve": FAB.alive(),
