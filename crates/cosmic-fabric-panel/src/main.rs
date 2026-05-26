@@ -7,5 +7,13 @@ fn main() -> cosmic::iced::Result {
         .with_env_filter(filter)
         .with_writer(std::io::stderr)
         .init();
-    cosmic_fabric_panel::run_applet()
+
+    match std::env::args().nth(1).as_deref() {
+        Some("settings") => cosmic_fabric_panel::run_settings(),
+        Some(other) => {
+            eprintln!("unknown subcommand: {other}\nusage: cosmic-fabric-panel [settings]");
+            std::process::exit(2);
+        }
+        None => cosmic_fabric_panel::run_applet(),
+    }
 }

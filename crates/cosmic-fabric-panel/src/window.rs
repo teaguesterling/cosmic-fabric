@@ -37,6 +37,7 @@ pub enum Message {
     RunPattern(String),
     RunDone(Result<RunResult, String>),
     CopyResult,
+    OpenSettings,
 }
 
 impl cosmic::Application for Window {
@@ -148,6 +149,15 @@ impl cosmic::Application for Window {
                 }
                 app::Task::none()
             }
+            Message::OpenSettings => {
+                if let Ok(exe) = std::env::current_exe() {
+                    let _ = std::process::Command::new(exe).arg("settings").spawn();
+                }
+                if let Some(p) = self.popup.take() {
+                    return destroy_popup(p);
+                }
+                app::Task::none()
+            }
         }
     }
 
@@ -216,7 +226,11 @@ impl cosmic::Application for Window {
 
         col = col.push(padded_control(divider::horizontal::default()));
         col = col.push(padded_control(
-            button::text("Refresh").on_press(Message::Refresh),
+            cosmic::iced::widget::row![
+                button::text("Refresh").on_press(Message::Refresh),
+                button::text("Settings\u{2026}").on_press(Message::OpenSettings),
+            ]
+            .spacing(8),
         ));
 
         self.core
