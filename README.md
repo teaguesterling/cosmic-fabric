@@ -34,6 +34,10 @@ Requires `fabric` (in `~/.local/bin`), `wl-clipboard`, `python3` ≥ 3.11, `noti
 | **1** | `cosmic-fabricd` daemon (REST/SSE, policy, placement) + thin socket-client launcher | ✅ `src/` (current) |
 | **2** | `cosmic-fabric-panel` + `cosmic-fabric-settings` (Rust/libcosmic) as daemon clients; context-tier sizing | ⬜ planned |
 
+## License
+
+MIT — see [LICENSE](LICENSE).
+
 ## Components (target)
 
 | component | surface | role |
