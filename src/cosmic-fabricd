@@ -15,6 +15,7 @@ newlines, so bodies stay single-line). Ops:
 """
 import json
 import os
+import queue
 import socketserver
 import sys
 import threading
@@ -27,6 +28,21 @@ LOG = os.path.expanduser("~/.cache/cosmic-fabric/daemon.log")
 _pat_cache = None
 _lock = threading.Lock()
 FAB = None
+
+# Result broker: subscribers (e.g. the panel) register a queue; a run with
+# "broadcast":true (e.g. from the launcher) pushes its events to all of them.
+SUBS = []
+SUBS_LOCK = threading.Lock()
+
+
+def broadcast(event):
+    with SUBS_LOCK:
+        subs = list(SUBS)
+    for q in subs:
+        try:
+            q.put_nowait(event)
+        except Exception:
+            pass
 
 
 def log(msg):
@@ -90,29 +106,66 @@ def handle(req):
 
 
 def stream_run(req, send):
-    """`{"op":"run","stream":true}` → a sequence of {"chunk":...} lines then a
-    final {"done":true, model, placement, ...} line (or {"error":...})."""
+    """`{"op":"run","stream":true}` → {"chunk":...} lines then {"done":...}.
+
+    With `"broadcast":true` the run's events are pushed to all subscribers
+    (the panel) as {"event":"start|chunk|done", ...} instead, and the
+    requester (the launcher) just gets {"dispatched":true} — this is the
+    launcher→panel handoff."""
     pat = req.get("pattern")
     if not pat:
         send({"error": "missing pattern"})
         return
+    bcast = bool(req.get("broadcast"))
     pol = core.load_policy()
     dmodel, dvendor, extra = core.resolve_model(pat, pol)
     model = req.get("model") or dmodel
     vendor = req.get("vendor") or dvendor
     opts = core.extra_to_options(extra)
-    log(f"run-stream pattern={pat} model={model} vendor={vendor}")
+    warn_below = pol["ollama"].get("warn_below_gpu", 99)
+    log(f"run-stream pattern={pat} model={model} vendor={vendor} broadcast={bcast}")
+    if bcast:
+        broadcast({"event": "start", "pattern": pat, "model": model})
+        send({"dispatched": True})  # quick ack; the panel shows the result
+
+    def on_chunk(c):
+        if bcast:
+            broadcast({"event": "chunk", "text": c})
+        else:
+            send({"chunk": c})
+
     try:
-        FAB.run(pat, req.get("input", ""), model, vendor, req.get("variables"), opts,
-                on_chunk=lambda c: send({"chunk": c}))
+        FAB.run(pat, req.get("input", ""), model, vendor, req.get("variables"), opts, on_chunk=on_chunk)
     except Exception as e:
         log(f"run-stream error: {e}")
-        send({"error": str(e)})
+        (broadcast if bcast else send)({"event": "error", "error": str(e)} if bcast else {"error": str(e)})
         return
     pct = core.gpu_placement(model, pol["ollama"]["url"]) if (vendor or "").lower() == "ollama" else None
-    log(f"run-stream done: placement={pct}")
-    send({"done": True, "model": model, "vendor": vendor,
-          "placement": pct, "warn_below": pol["ollama"].get("warn_below_gpu", 99)})
+    log(f"run-stream done: placement={pct} broadcast={bcast}")
+    done = {"model": model, "vendor": vendor, "placement": pct, "warn_below": warn_below}
+    if bcast:
+        broadcast({"event": "done", **done})
+    else:
+        send({"done": True, **done})
+
+
+def run_subscribe(send):
+    """Dedicate this connection to receiving broadcast events (the panel)."""
+    q = queue.Queue(maxsize=512)
+    with SUBS_LOCK:
+        SUBS.append(q)
+    log(f"subscriber added ({len(SUBS)} total)")
+    try:
+        send({"subscribed": True})
+        while True:
+            send(q.get())  # raises when the peer (panel) disconnects
+    except Exception:
+        pass
+    finally:
+        with SUBS_LOCK:
+            if q in SUBS:
+                SUBS.remove(q)
+        log("subscriber removed")
 
 
 class Handler(socketserver.StreamRequestHandler):
@@ -130,7 +183,10 @@ class Handler(socketserver.StreamRequestHandler):
             except Exception:
                 send({"error": "bad json"})
                 continue
-            if req.get("op") == "run" and req.get("stream"):
+            if req.get("op") == "subscribe":
+                run_subscribe(send)
+                return  # connection dedicated to pushing broadcasts
+            if req.get("op") == "run" and (req.get("stream") or req.get("broadcast")):
                 stream_run(req, send)
             else:
                 send(handle(req))
