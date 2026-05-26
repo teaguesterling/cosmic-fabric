@@ -10,21 +10,29 @@ goo are siblings: both speak to fabric, neither depends on the other. The launch
 plugin uses pop-launcher's protocol — the same surface a future goo meta-plugin
 would target — with zero goo dependency.
 
-See [doc/design.md](doc/design.md) for the architecture and phasing.
+📖 **[User manual](doc/manual.md)** · 🏗 **[Design & roadmap](doc/design.md)**
 
-## Status: Phase 0 — prototype
-
-A working pop-launcher plugin: in the COSMIC launcher, type `fab <pattern>`, pick a
-fabric pattern, and it runs that pattern on your current selection (delivered to the
-clipboard with a notification preview).
+## Quickstart
 
 ```sh
-cd prototype && ./install.sh
-# open the COSMIC launcher → type:  fab summ   → pick a pattern (text selected first)
+cd src && ./install.sh     # user-dir only, no sudo
+pkill cosmic-launcher      # reload the launcher
 ```
+Then: **select text** anywhere → open the launcher → type **`fab summ`** → pick
+`scribe-summarize` → Enter. The result lands on your clipboard with a View/Edit
+notification. Per-pattern model/vendor + output mode live in
+`~/.config/cosmic-fabric/policy.toml` (see the [manual](doc/manual.md)).
 
-Requires `fabric` (in `~/.local/bin`), `wl-clipboard`, and `notify-send`.
-Per-pattern model/vendor lives in `~/.config/cosmic-fabric/policy.toml`.
+Requires `fabric` (in `~/.local/bin`), `wl-clipboard`, `python3` ≥ 3.11, `notify-send`;
+`zenity`/`cosmic-edit` optional for the result dialog/editor.
+
+## Status
+
+| Phase | What | State |
+|---|---|---|
+| **0** | pop-launcher plugin prototype (fabric CLI, clipboard/dialog delivery) | ✅ `prototype/` (kept as reference) |
+| **1** | `cosmic-fabricd` daemon (REST/SSE, policy, placement) + thin socket-client launcher | ✅ `src/` (current) |
+| **2** | `cosmic-fabric-panel` + `cosmic-fabric-settings` (Rust/libcosmic) as daemon clients; context-tier sizing | ⬜ planned |
 
 ## Components (target)
 
