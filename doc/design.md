@@ -76,27 +76,27 @@ Near-term cheap experiment (no ladder yet): bake/test `iq4xs` at `num_ctx 8192` 
 q8 KV — if it still loads 100% GPU, just raise the single default and most inputs are
 covered without a ladder.
 
-## Deferred: launcher → panel result handoff
+## Launcher → panel result handoff (built; panel auto-open pending live check)
 
-Goal: the launcher dispatches a run and the **panel** shows the streaming result
-(retiring the launcher's `notify-send --wait` hang), with the launcher's
-clipboard/notify path kept as the standalone fallback.
+The launcher dispatches a run and the **panel** shows the streaming result
+(retiring the launcher's `notify-send --wait` hang); the launcher's
+clipboard/notify path stays as the standalone fallback. This is also the
+**cosmic-goo-ready shared channel** — goo's fabric route would `broadcast` the
+same way.
 
-Design (build with live eyes — the panel auto-open is the unverifiable part):
-- **Daemon broker:** a `{"op":"subscribe"}` op holds a persistent connection;
-  a run sent with `"broadcast": true` is run as a stream *and* its
-  chunk/done lines are pushed to every subscriber. (Subscriber list + a lock;
-  the stream op already exists.)
-- **Panel:** a long-lived `Subscription` on `subscribe`; an incoming run opens
-  the popup (reuse the `get_popup` path) and feeds the existing
-  `RunEvent` handling.
-- **Launcher:** a `policy.toml` `[output] mode = "panel"` (opt-in, default
-  unchanged so the launcher never regresses) that sends `broadcast` instead of
-  running + delivering itself.
+- **Daemon broker:** `{"op":"subscribe"}` holds a connection; a run with
+  `"broadcast":true` streams its `{"event":start|chunk|done}` to all
+  subscribers, while the requester gets `{"dispatched":true,"subscribers":n}`.
+  If `n==0` it returns `dispatched:false` (no run) so the caller falls back.
+- **Panel:** an always-on `daemon::subscribe()` Subscription → `BrokerEvent`;
+  `Start` auto-opens the popup (`get_popup`), chunks stream into the result.
+- **Launcher:** `[output] mode = "panel"` (opt-in) → broadcast, else normal
+  run + local deliver (no regression, no lost results).
 
-Building blocks in place: the daemon `run`-stream op and the panel's `RunEvent`
-streaming. Remaining: the broker (socket-testable) + the panel auto-open
-(needs an in-panel check).
+Socket-tested end-to-end (launcher worker → broker → subscriber: start + ~39
+chunks + done, 100% GPU). **Unverified:** the panel applet's popup auto-opening
+from the background `Start` event (compositors may want a user gesture) — needs
+an in-panel check.
 
 ## Standalone-from-goo
 

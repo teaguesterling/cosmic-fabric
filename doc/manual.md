@@ -130,6 +130,7 @@ warn_below_gpu = 99   # notify if an Ollama run lands below this % on the GPU
 | `dialog` | pop a scrollable `zenity` window every run |
 | `edit` | open the result in `cosmic-edit` every run |
 | `clipboard` | copy + a plain notification (no buttons) |
+| `panel` | dispatch the result to the **Fabric panel applet** (it streams there); falls back to a notification if the panel isn't running |
 
 **`[ollama]`** — `url` is used now for the GPU-placement check; `bin` is reserved for
 the daemon's future model-lifecycle role; `warn_below_gpu` sets the spill-warning
