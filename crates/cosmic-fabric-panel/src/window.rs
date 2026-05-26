@@ -164,7 +164,7 @@ impl cosmic::Application for Window {
     fn view(&self) -> Element<'_, Message> {
         self.core
             .applet
-            .icon_button("system-run-symbolic")
+            .icon_button("com.github.teaguesterling.CosmicFabric-symbolic")
             .on_press(Message::TogglePopup)
             .into()
     }
@@ -183,7 +183,10 @@ impl cosmic::Application for Window {
                 .loaded
                 .first()
                 .and_then(|l| l.gpu_pct)
-                .map(|p| format!(" \u{00b7} {p:.0}% GPU"))
+                .map(|p| {
+                    let warn = if p < 99.0 { " \u{26a0}" } else { "" };
+                    format!(" \u{00b7} {p:.0}% GPU{warn}")
+                })
                 .unwrap_or_default();
             col = col.push(padded_control(text::caption(format!(
                 "serve {serve}  \u{00b7}  {model}{gpu}"

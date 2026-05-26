@@ -4,6 +4,7 @@ appid := 'com.github.teaguesterling.CosmicFabric'
 prefix := env_var_or_default('PREFIX', env_var('HOME') / '.local')
 bin-dir := prefix / 'bin'
 applications-dir := prefix / 'share/applications'
+icons-dir := prefix / 'share/icons/hicolor/scalable/apps'
 
 # Default: release build
 default: build
@@ -22,11 +23,13 @@ run:
 install: build
     install -Dm0755 target/release/{{name}} {{bin-dir}}/{{name}}
     install -Dm0644 cosmic-fabric-panel/data/{{appid}}.desktop {{applications-dir}}/{{appid}}.desktop
+    install -Dm0644 cosmic-fabric-panel/data/icons/{{appid}}-symbolic.svg {{icons-dir}}/{{appid}}-symbolic.svg
 
 # Install the debug binary (faster for iterating)
 install-debug: build-debug
     install -Dm0755 target/debug/{{name}} {{bin-dir}}/{{name}}
     install -Dm0644 cosmic-fabric-panel/data/{{appid}}.desktop {{applications-dir}}/{{appid}}.desktop
+    install -Dm0644 cosmic-fabric-panel/data/icons/{{appid}}-symbolic.svg {{icons-dir}}/{{appid}}-symbolic.svg
 
 uninstall:
     rm -f {{bin-dir}}/{{name}} {{applications-dir}}/{{appid}}.desktop
