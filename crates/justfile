@@ -1,0 +1,36 @@
+name := 'cosmic-fabric-panel'
+appid := 'com.github.teaguesterling.CosmicFabric'
+
+prefix := env_var_or_default('PREFIX', env_var('HOME') / '.local')
+bin-dir := prefix / 'bin'
+applications-dir := prefix / 'share/applications'
+
+# Default: release build
+default: build
+
+build:
+    cargo build --release
+
+build-debug:
+    cargo build
+
+# Run standalone (appears as a floating window when not embedded by the panel)
+run:
+    RUST_LOG=cosmic_fabric_panel=debug cargo run
+
+# Install (PREFIX defaults to ~/.local — user install, no sudo)
+install: build
+    install -Dm0755 target/release/{{name}} {{bin-dir}}/{{name}}
+    install -Dm0644 cosmic-fabric-panel/data/{{appid}}.desktop {{applications-dir}}/{{appid}}.desktop
+
+# Install the debug binary (faster for iterating)
+install-debug: build-debug
+    install -Dm0755 target/debug/{{name}} {{bin-dir}}/{{name}}
+    install -Dm0644 cosmic-fabric-panel/data/{{appid}}.desktop {{applications-dir}}/{{appid}}.desktop
+
+uninstall:
+    rm -f {{bin-dir}}/{{name}} {{applications-dir}}/{{appid}}.desktop
+
+# After install, add the applet to the panel:
+hint:
+    @echo 'Open: cosmic-settings  →  Panel (or Dock) → Configure applets → add "Fabric"'

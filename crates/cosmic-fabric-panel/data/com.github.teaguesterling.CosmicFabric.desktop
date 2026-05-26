@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=Fabric
+Comment=Run fabric AI patterns and watch the local deployment
+Type=Application
+Categories=COSMIC;
+Exec=cosmic-fabric-panel
+Icon=system-run-symbolic
+NoDisplay=true
+X-CosmicApplet=true
+X-CosmicHoverPopup=Auto
+X-HostWaylandDisplay=true
