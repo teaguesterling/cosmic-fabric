@@ -78,3 +78,62 @@ verb may declare a *default* sub-channel (e.g. `draft-response` → `assemble`,
 
 goo already has: the `claude://` hand-off routes, the verb/object grammar. It
 *stops* reimplementing fabric access — the daemon is the channel.
+
+## The route shape
+
+A thin daemon-socket client. v1 (bash routes) ships it as a helper; v2
+(goo-engine, Rust) makes the same socket calls natively:
+
+```
+goo-fabric <inference|assemble> <pattern> [--var k=v …]   < input(stdin)   → output(stdout)
+            inference → daemon {"op":"run", ...}        assemble → daemon {"op":"assemble", ...}
+```
+
+Per invocation, goo maps:
+
+| goo | → fabric / daemon |
+|---|---|
+| verb (`summarize`) | `pattern` = the verb's `fabric_pattern` (`scribe-summarize`) |
+| `Using: …/fabric/{inference\|assemble}` | which op |
+| adverbs (`depth=ultra`) → `With:` | `variables = {depth: ultra}` → `{{depth}}` in the pattern |
+| subject (`goo://sel/`) | `input` (text) |
+| `To:` | where `output` goes (clipboard / `claude://` / panel) |
+
+## Friction / open questions (surfaced while designing the route)
+
+Ordered by how much they could force design changes.
+
+1. **"References, not data" vs fabric wants *text* (foundational).** Subjects are
+   locators, but `run`/`assemble` take a string `input`. `sel`/`clip`/`text` are
+   already text; **`file`/`url`/`pdf`/`image` are not** (extract / fetch / OCR).
+   Either goo resolves to `.text` first, or the daemon grows typed-input handling
+   (url → fabric `-u`, file → read, `-a` attachment). *Lean: v1 fabric verbs take
+   text subjects only; url/pdf/image later.*
+2. **`claude://` can't carry a big assembled prompt (threatens the headline
+   feature).** `?q=` seeds a **user message, not a system prompt**, and has a
+   **URL-length limit** a system-prompt + long document will exceed. The
+   assemble→Claude seed may need clipboard-and-paste, a temp file, or the API
+   instead of `claude://?q=`. *Decide before committing to `claude://?q=`.*
+3. **A channel-agnostic verb is carrying fabric-specific config (architectural).**
+   `fabric_pattern` + default sub-channel + adverb-names-that-match-`{{vars}}` are
+   fabric coupling on a neutral verb. *Lean: a `[verb.channels.fabric]` block,
+   separate from the verb's neutral identity.*
+4. **Two sub-channels don't map onto v1's flat `via` adverb (v1/v2 impedance).**
+   The `goo://channel/fabric/{inference|assemble}` path has no home in
+   `--via=fabric`; v1 needs `--via=fabric --mode=assemble` or `via` values
+   `fabric`/`fabric-assemble`. Clean only in v2.
+5. **"Produce then route" is a two-step the v1 single-command model resists.**
+   `To:` routing output (result → clipboard; prompt → `claude://`) is a pipeline;
+   v1 routes were single-step. It's the spec's `Destination:` / two-step verb,
+   expressed as a pipe in v1.
+6. **Streaming / broadcast don't fit a synchronous route.** `run`-stream and
+   `broadcast`-to-panel are async; a v1 template is synchronous. `To: panel`
+   (broadcast) vs `To: clipboard` (run) take *different* ops — the route branches
+   on `To:`, it isn't one uniform template.
+7. **Implicit adverb-name ↔ pattern-variable-name contract.** `depth=ultra` works
+   only because `scribe-think` uses `{{depth}}`; a rename silently breaks.
+   *Needs an explicit adverb→var declaration on the verb.*
+
+**Load-bearing:** #2 (`claude://` limits) and #1 (subject→text) could force
+changes — resolve before building. #3 is the architectural one to get right
+early. #4–7 are mechanical (encoding choices, not blockers).
