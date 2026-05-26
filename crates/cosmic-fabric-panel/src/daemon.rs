@@ -84,6 +84,70 @@ pub async fn run(pattern: String, input: String) -> Result<RunResult, String> {
     serde_json::from_value(v).map_err(|e| e.to_string())
 }
 
+#[derive(Debug, Clone)]
+pub enum RunEvent {
+    Chunk(String),
+    Done(RunResult),
+    Error(String),
+}
+
+/// Stream a pattern run from the daemon: yields a `Chunk` per fragment, then a
+/// `Done` (or `Error`). For use with `Subscription::run_with`.
+pub fn run_stream(
+    pattern: String,
+    input: String,
+) -> impl cosmic::iced::futures::Stream<Item = RunEvent> {
+    use cosmic::iced::futures::SinkExt;
+    cosmic::iced::stream::channel(64, move |mut output: cosmic::iced::futures::channel::mpsc::Sender<RunEvent>| async move {
+        let conn = match UnixStream::connect(sock_path()).await {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = output.send(RunEvent::Error(format!("daemon: {e}"))).await;
+                return;
+            }
+        };
+        let (rd, mut wr) = conn.into_split();
+        let req = serde_json::json!({
+            "op": "run", "stream": true, "pattern": pattern, "input": input
+        })
+        .to_string()
+            + "\n";
+        if let Err(e) = wr.write_all(req.as_bytes()).await {
+            let _ = output.send(RunEvent::Error(e.to_string())).await;
+            return;
+        }
+        let mut reader = BufReader::new(rd);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match reader.read_line(&mut line).await {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
+            }
+            let l = line.trim();
+            if l.is_empty() {
+                continue;
+            }
+            let v: serde_json::Value = match serde_json::from_str(l) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            if let Some(c) = v.get("chunk").and_then(|x| x.as_str()) {
+                if output.send(RunEvent::Chunk(c.to_string())).await.is_err() {
+                    break;
+                }
+            } else if v.get("done").is_some() {
+                let rr: RunResult = serde_json::from_value(v).unwrap_or_default();
+                let _ = output.send(RunEvent::Done(rr)).await;
+                break;
+            } else if let Some(e) = v.get("error").and_then(|x| x.as_str()) {
+                let _ = output.send(RunEvent::Error(e.to_string())).await;
+                break;
+            }
+        }
+    })
+}
+
 /// Current clipboard text (the panel's quick-run input source).
 pub fn clipboard() -> String {
     std::process::Command::new("wl-paste")

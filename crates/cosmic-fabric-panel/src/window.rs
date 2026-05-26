@@ -13,8 +13,9 @@ use cosmic::{
     widget::{button, container, divider, scrollable, text},
     Element,
 };
+use cosmic::iced::futures::StreamExt;
 
-use crate::daemon::{self, RunResult, Status};
+use crate::daemon::{self, Status};
 
 pub struct Window {
     core: cosmic::app::Core,
@@ -25,6 +26,8 @@ pub struct Window {
     result_meta: Option<String>,
     running: bool,
     error: Option<String>,
+    pending: Option<(u64, String, String)>, // (run id, pattern, input) — drives the stream subscription
+    run_seq: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -35,7 +38,7 @@ pub enum Message {
     StatusDone(Result<Status, String>),
     PatternsDone(Result<Vec<String>, String>),
     RunPattern(String),
-    RunDone(Result<RunResult, String>),
+    RunEvent(daemon::RunEvent),
     CopyResult,
     OpenSettings,
 }
@@ -57,6 +60,8 @@ impl cosmic::Application for Window {
                 result_meta: None,
                 running: false,
                 error: None,
+                pending: None,
+                run_seq: 0,
             },
             app::Task::none(),
         )
@@ -70,6 +75,18 @@ impl cosmic::Application for Window {
     }
     fn style(&self) -> Option<cosmic::iced::theme::Style> {
         Some(cosmic::applet::style())
+    }
+
+    fn subscription(&self) -> cosmic::iced::Subscription<Message> {
+        match &self.pending {
+            Some(p) => cosmic::iced::Subscription::run_with(
+                p.clone(),
+                |(_, pat, input): &(u64, String, String)| {
+                    daemon::run_stream(pat.clone(), input.clone()).map(Message::RunEvent)
+                },
+            ),
+            None => cosmic::iced::Subscription::none(),
+        }
     }
 
     fn update(&mut self, message: Message) -> app::Task<Message> {
@@ -118,28 +135,39 @@ impl cosmic::Application for Window {
                     self.error = Some("Clipboard is empty — copy some text first.".into());
                     return app::Task::none();
                 }
-                self.running = true;
-                self.result = None;
+                self.run_seq += 1;
+                self.pending = Some((self.run_seq, pattern, input));
+                self.result = Some(String::new());
                 self.result_meta = None;
+                self.running = true;
                 self.error = None;
-                cosmic::Task::perform(daemon::run(pattern, input), |r| {
-                    cosmic::Action::App(Message::RunDone(r))
-                })
+                app::Task::none()
             }
-            Message::RunDone(res) => {
-                self.running = false;
-                match res {
-                    Ok(r) if r.error.is_some() => self.error = r.error,
-                    Ok(r) => {
-                        self.result = r.output;
-                        let model = r.model.unwrap_or_default();
-                        let place = r
+            Message::RunEvent(ev) => {
+                match ev {
+                    daemon::RunEvent::Chunk(s) => {
+                        if let Some(r) = self.result.as_mut() {
+                            r.push_str(&s);
+                        }
+                    }
+                    daemon::RunEvent::Done(rr) => {
+                        self.running = false;
+                        self.pending = None;
+                        if self.result.as_deref().unwrap_or("").is_empty() {
+                            self.result = rr.output;
+                        }
+                        let model = rr.model.unwrap_or_default();
+                        let place = rr
                             .placement
                             .map(|p| format!(" \u{00b7} {p:.0}% GPU"))
                             .unwrap_or_default();
                         self.result_meta = Some(format!("{model}{place}"));
                     }
-                    Err(e) => self.error = Some(e),
+                    daemon::RunEvent::Error(e) => {
+                        self.running = false;
+                        self.pending = None;
+                        self.error = Some(e);
+                    }
                 }
                 app::Task::none()
             }
