@@ -222,6 +222,15 @@ def run_worker(pattern, infile):
             os.unlink(infile)
         except OSError:
             pass
+    # output=panel: dispatch the run to the panel (it shows the streaming
+    # result), unless no panel is subscribed — then fall back to local delivery.
+    if load_output_mode() == "panel":
+        ack = daemon_call({"op": "run", "broadcast": True, "pattern": pattern, "input": text}, timeout=600)
+        if ack and ack.get("dispatched"):
+            log(f"dispatched to panel ({ack.get('subscribers')} subscriber(s))")
+            return
+        log("no panel subscribed; falling back to local delivery")
+
     resp = daemon_call({"op": "run", "pattern": pattern, "input": text}, timeout=600)
     if not resp:
         notify("fabric: error", f"{pattern}: daemon unreachable")

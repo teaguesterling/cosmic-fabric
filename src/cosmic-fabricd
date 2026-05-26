@@ -117,6 +117,14 @@ def stream_run(req, send):
         send({"error": "missing pattern"})
         return
     bcast = bool(req.get("broadcast"))
+    if bcast:
+        with SUBS_LOCK:
+            nsubs = len(SUBS)
+        if nsubs == 0:
+            # No panel subscribed — don't run into the void; let the caller
+            # (launcher) fall back to local delivery.
+            send({"dispatched": False, "subscribers": 0})
+            return
     pol = core.load_policy()
     dmodel, dvendor, extra = core.resolve_model(pat, pol)
     model = req.get("model") or dmodel
@@ -126,7 +134,7 @@ def stream_run(req, send):
     log(f"run-stream pattern={pat} model={model} vendor={vendor} broadcast={bcast}")
     if bcast:
         broadcast({"event": "start", "pattern": pat, "model": model})
-        send({"dispatched": True})  # quick ack; the panel shows the result
+        send({"dispatched": True, "subscribers": nsubs})  # quick ack; the panel shows it
 
     def on_chunk(c):
         if bcast:

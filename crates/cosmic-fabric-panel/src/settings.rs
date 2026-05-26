@@ -84,15 +84,17 @@ pub enum Mode {
     Dialog,
     Edit,
     Clipboard,
+    Panel,
 }
 impl Mode {
-    const ALL: [Mode; 4] = [Mode::Notify, Mode::Dialog, Mode::Edit, Mode::Clipboard];
+    const ALL: [Mode; 5] = [Mode::Notify, Mode::Dialog, Mode::Edit, Mode::Clipboard, Mode::Panel];
     fn label(self) -> &'static str {
         match self {
             Mode::Notify => "Notification with View/Edit buttons",
             Mode::Dialog => "Open a dialog window",
             Mode::Edit => "Open in the editor",
             Mode::Clipboard => "Clipboard only",
+            Mode::Panel => "Show in the Fabric panel (needs the panel applet)",
         }
     }
     fn as_str(self) -> &'static str {
@@ -101,6 +103,7 @@ impl Mode {
             Mode::Dialog => "dialog",
             Mode::Edit => "edit",
             Mode::Clipboard => "clipboard",
+            Mode::Panel => "panel",
         }
     }
     fn from_str(s: &str) -> Mode {
@@ -108,6 +111,7 @@ impl Mode {
             "dialog" => Mode::Dialog,
             "edit" => Mode::Edit,
             "clipboard" => Mode::Clipboard,
+            "panel" => Mode::Panel,
             _ => Mode::Notify,
         }
     }

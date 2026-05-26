@@ -39,6 +39,7 @@ pub enum Message {
     PatternsDone(Result<Vec<String>, String>),
     RunPattern(String),
     RunEvent(daemon::RunEvent),
+    Broker(daemon::BrokerEvent),
     CopyResult,
     OpenSettings,
 }
@@ -78,14 +79,22 @@ impl cosmic::Application for Window {
     }
 
     fn subscription(&self) -> cosmic::iced::Subscription<Message> {
+        // Always-on: receive runs dispatched elsewhere (launcher output=panel).
+        let broker = cosmic::iced::Subscription::run_with("cf-broker", |_: &&str| {
+            daemon::subscribe().map(Message::Broker)
+        });
+        // Per-run: stream a pattern launched from this panel.
         match &self.pending {
-            Some(p) => cosmic::iced::Subscription::run_with(
-                p.clone(),
-                |(_, pat, input): &(u64, String, String)| {
-                    daemon::run_stream(pat.clone(), input.clone()).map(Message::RunEvent)
-                },
-            ),
-            None => cosmic::iced::Subscription::none(),
+            Some(p) => cosmic::iced::Subscription::batch([
+                broker,
+                cosmic::iced::Subscription::run_with(
+                    p.clone(),
+                    |(_, pat, input): &(u64, String, String)| {
+                        daemon::run_stream(pat.clone(), input.clone()).map(Message::RunEvent)
+                    },
+                ),
+            ]),
+            None => broker,
         }
     }
 
@@ -171,6 +180,49 @@ impl cosmic::Application for Window {
                 }
                 app::Task::none()
             }
+            Message::Broker(ev) => match ev {
+                daemon::BrokerEvent::Start(pattern) => {
+                    self.running = true;
+                    self.result = Some(String::new());
+                    self.result_meta = Some(format!("{pattern} (via launcher)"));
+                    self.error = None;
+                    // Auto-open the popup so the incoming result is visible.
+                    if self.popup.is_none() {
+                        let new_id = window::Id::unique();
+                        self.popup = Some(new_id);
+                        let ps = self.core.applet.get_popup_settings(
+                            self.core.main_window_id().unwrap(),
+                            new_id,
+                            None,
+                            None,
+                            None,
+                        );
+                        return get_popup(ps);
+                    }
+                    app::Task::none()
+                }
+                daemon::BrokerEvent::Chunk(t) => {
+                    if let Some(r) = self.result.as_mut() {
+                        r.push_str(&t);
+                    }
+                    app::Task::none()
+                }
+                daemon::BrokerEvent::Done(rr) => {
+                    self.running = false;
+                    let model = rr.model.unwrap_or_default();
+                    let place = rr
+                        .placement
+                        .map(|p| format!(" \u{00b7} {p:.0}% GPU"))
+                        .unwrap_or_default();
+                    self.result_meta = Some(format!("{model}{place}"));
+                    app::Task::none()
+                }
+                daemon::BrokerEvent::Error(e) => {
+                    self.running = false;
+                    self.error = Some(e);
+                    app::Task::none()
+                }
+            },
             Message::CopyResult => {
                 if let Some(r) = &self.result {
                     daemon::set_clipboard(r);

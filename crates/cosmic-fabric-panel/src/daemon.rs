@@ -148,6 +148,69 @@ pub fn run_stream(
     })
 }
 
+#[derive(Debug, Clone)]
+pub enum BrokerEvent {
+    Start(String), // pattern
+    Chunk(String),
+    Done(RunResult),
+    Error(String),
+}
+
+/// Long-lived subscription to the daemon's broadcast channel: runs dispatched
+/// elsewhere (e.g. the launcher with output=panel) arrive here. Reconnects if
+/// the daemon isn't up yet or restarts.
+pub fn subscribe() -> impl cosmic::iced::futures::Stream<Item = BrokerEvent> {
+    use cosmic::iced::futures::SinkExt;
+    cosmic::iced::stream::channel(64, |mut output: cosmic::iced::futures::channel::mpsc::Sender<BrokerEvent>| async move {
+        loop {
+            if let Ok(conn) = UnixStream::connect(sock_path()).await {
+                let (rd, mut wr) = conn.into_split();
+                if wr.write_all(b"{\"op\":\"subscribe\"}\n").await.is_ok() {
+                    let mut reader = BufReader::new(rd);
+                    let mut line = String::new();
+                    loop {
+                        line.clear();
+                        match reader.read_line(&mut line).await {
+                            Ok(0) | Err(_) => break,
+                            Ok(_) => {}
+                        }
+                        let l = line.trim();
+                        if l.is_empty() {
+                            continue;
+                        }
+                        let v: serde_json::Value = match serde_json::from_str(l) {
+                            Ok(v) => v,
+                            Err(_) => continue,
+                        };
+                        let ev = match v.get("event").and_then(|x| x.as_str()) {
+                            Some("start") => Some(BrokerEvent::Start(
+                                v.get("pattern").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                            )),
+                            Some("chunk") => v
+                                .get("text")
+                                .and_then(|x| x.as_str())
+                                .map(|t| BrokerEvent::Chunk(t.to_string())),
+                            Some("done") => {
+                                Some(BrokerEvent::Done(serde_json::from_value(v.clone()).unwrap_or_default()))
+                            }
+                            Some("error") => Some(BrokerEvent::Error(
+                                v.get("error").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                            )),
+                            _ => None, // {"subscribed":true}, etc.
+                        };
+                        if let Some(ev) = ev {
+                            if output.send(ev).await.is_err() {
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await; // reconnect
+        }
+    })
+}
+
 /// Current clipboard text (the panel's quick-run input source).
 pub fn clipboard() -> String {
     std::process::Command::new("wl-paste")
