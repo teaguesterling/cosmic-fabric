@@ -1,0 +1,302 @@
+#!/usr/bin/env python3
+"""cosmic-fabric-launcher (Phase-1) — thin pop-launcher client of cosmic-fabricd.
+
+The run/policy/placement logic moved to the daemon; this just: lists patterns
+(via the daemon), captures the selection, asks the daemon to run, and delivers
+the result (clipboard / dialog / notify). Auto-spawns the daemon if it's not up.
+
+Modes:
+  (no args)         pop-launcher JSON-IPC loop
+  --run PATTERN IN  detached worker: ask daemon to run, then deliver
+"""
+import json
+import os
+import re
+import shutil
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+
+SCRIPT = os.path.realpath(sys.argv[0])
+DAEMON = os.path.expanduser("~/.local/share/cosmic-fabric/cosmic-fabricd")
+PREFIX = re.compile(r"^\s*fab(ric)?\s+", re.IGNORECASE)
+ICON = {"Name": "text-x-generic"}
+PREVIEW_CHARS = 240
+CAP = 12
+LOG = os.path.expanduser("~/.cache/cosmic-fabric/launcher.log")
+
+
+def log(msg):
+    print(f"[cosmic-fabric] {msg}", file=sys.stderr, flush=True)
+    try:
+        os.makedirs(os.path.dirname(LOG), exist_ok=True)
+        with open(LOG, "a") as f:
+            f.write(f"{time.strftime('%H:%M:%S')} [{os.getpid():>6}] {msg}\n")
+    except Exception:
+        pass
+
+
+# ---------- daemon socket ---------------------------------------------------
+def sock_path():
+    base = os.environ.get("XDG_RUNTIME_DIR")
+    if not base:
+        base = os.path.expanduser("~/.cache/cosmic-fabric")
+        os.makedirs(base, exist_ok=True)
+    return os.path.join(base, "cosmic-fabric.sock")
+
+
+def spawn_daemon():
+    if not os.path.exists(DAEMON):
+        log(f"daemon not found at {DAEMON}")
+        return
+    log("spawning cosmic-fabricd")
+    try:
+        subprocess.Popen([DAEMON], start_new_session=True,
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception as e:
+        log(f"spawn daemon failed: {e}")
+
+
+def daemon_call(req, timeout=600, autospawn=True):
+    path = sock_path()
+    if not os.path.exists(path) and autospawn:
+        spawn_daemon()
+        for _ in range(60):  # up to ~15s for first cold start (+ fabric --serve)
+            if os.path.exists(path):
+                break
+            time.sleep(0.25)
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(timeout)
+        s.connect(path)
+        s.sendall((json.dumps(req) + "\n").encode())
+        buf = b""
+        while not buf.endswith(b"\n"):
+            chunk = s.recv(65536)
+            if not chunk:
+                break
+            buf += chunk
+        s.close()
+        return json.loads(buf.decode())
+    except Exception as e:
+        log(f"daemon_call({req.get('op')}) failed: {e}")
+        return None
+
+
+# ---------- patterns / matching --------------------------------------------
+_pattern_cache = None
+
+
+def patterns():
+    global _pattern_cache
+    if _pattern_cache is None:
+        resp = daemon_call({"op": "patterns"}, timeout=20)
+        names = (resp or {}).get("patterns", []) if resp else []
+        scribe = sorted(n for n in names if n.startswith("scribe-"))
+        rest = sorted(n for n in names if not n.startswith("scribe-"))
+        if names:
+            _pattern_cache = scribe + rest  # cache only on success
+        return scribe + rest
+    return _pattern_cache
+
+
+def match(query, names):
+    q = query.strip().lower()
+    force_all = q.startswith("!")
+    if force_all:
+        q = q[1:].strip()
+    scribe = [n for n in names if n.startswith("scribe-")]
+    if not q:
+        return (names if force_all else scribe)[:CAP]
+    if force_all:
+        return [n for n in names if q in n.lower()][:CAP]
+    hits = [n for n in scribe if q in n.lower()]
+    if not hits:
+        hits = [n for n in names if q in n.lower()]
+    return hits[:CAP]
+
+
+# ---------- selection + delivery (client-side UI) --------------------------
+def emit(obj):
+    print(json.dumps(obj), flush=True)
+
+
+def selection():
+    for args in (["wl-paste", "-p", "-n"], ["wl-paste", "-n"]):
+        try:
+            r = subprocess.run(args, capture_output=True, text=True, timeout=3, stdin=subprocess.DEVNULL)
+            if r.returncode == 0 and r.stdout.strip():
+                return r.stdout
+        except Exception:
+            pass
+    return ""
+
+
+def notify(title, body):
+    try:
+        subprocess.run(["notify-send", title, body], timeout=5, stdin=subprocess.DEVNULL)
+    except Exception:
+        pass
+
+
+def load_output_mode():
+    try:
+        import tomllib
+        with open(os.path.expanduser("~/.config/cosmic-fabric/policy.toml"), "rb") as f:
+            return (tomllib.load(f).get("output", {}) or {}).get("mode", "notify")
+    except Exception:
+        return "notify"
+
+
+def clip(text):
+    try:
+        subprocess.run(["wl-copy"], input=text, text=True, timeout=5)
+    except Exception as e:
+        log(f"wl-copy failed: {e}")
+
+
+def show_dialog(pattern, text):
+    if not shutil.which("zenity"):
+        return
+    try:
+        subprocess.run(["zenity", "--text-info", "--title", f"fabric: {pattern}",
+                        "--width", "760", "--height", "520"], input=text, text=True, timeout=3600)
+    except Exception as e:
+        log(f"zenity failed: {e}")
+
+
+def open_edit(pattern, text):
+    try:
+        tf = tempfile.NamedTemporaryFile("w", delete=False, suffix=".md", prefix=f"fabric-{pattern}-")
+        tf.write(text)
+        tf.close()
+        subprocess.Popen(["cosmic-edit", tf.name], start_new_session=True,
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception as e:
+        log(f"cosmic-edit failed: {e}")
+
+
+def notify_actions(title, body):
+    try:
+        r = subprocess.run(["notify-send", "--wait", "-t", "30000",
+                            "-A", "view=View", "-A", "edit=Edit", title, body],
+                           capture_output=True, text=True, timeout=45, stdin=subprocess.DEVNULL)
+        return r.stdout.strip()
+    except Exception as e:
+        log(f"notify-actions failed/timeout: {e}")
+        return ""
+
+
+def deliver(pattern, text, warn=""):
+    clip(text)
+    mode = load_output_mode()
+    n = len(text)
+    head = (warn + "\n" if warn else "") + f"✓ copied ({n} chars)"
+    preview = text[:PREVIEW_CHARS] + ("…" if n > PREVIEW_CHARS else "")
+    log(f"deliver mode={mode} ({n} chars) warn={warn!r}")
+    if mode == "dialog":
+        notify(f"fabric: {pattern}", head + " — opening…")
+        show_dialog(pattern, text)
+    elif mode == "edit":
+        notify(f"fabric: {pattern}", head + " — opening editor…")
+        open_edit(pattern, text)
+    elif mode == "notify":
+        action = notify_actions(f"fabric: {pattern}", f"{head}\n\n{preview}")
+        if action == "view":
+            show_dialog(pattern, text)
+        elif action == "edit":
+            open_edit(pattern, text)
+    else:
+        notify(f"fabric: {pattern}", f"{head}\n\n{preview}")
+
+
+# ---------- worker (--run): ask the daemon, then deliver -------------------
+def run_worker(pattern, infile):
+    try:
+        with open(infile) as f:
+            text = f.read()
+    finally:
+        try:
+            os.unlink(infile)
+        except OSError:
+            pass
+    resp = daemon_call({"op": "run", "pattern": pattern, "input": text}, timeout=600)
+    if not resp:
+        notify("fabric: error", f"{pattern}: daemon unreachable")
+        return
+    if resp.get("error"):
+        notify("fabric: error", f"{pattern}: {resp['error'][:PREVIEW_CHARS]}")
+        return
+    out = (resp.get("output") or "").strip()
+    if not out:
+        notify("fabric: empty result", f"{pattern} returned nothing")
+        return
+    warn = ""
+    pct, below = resp.get("placement"), resp.get("warn_below", 99)
+    if pct is not None:
+        log(f"placement: {pct:.0f}% GPU ({resp.get('model')})")
+        if pct < below:
+            warn = f"⚠ {pct:.0f}% GPU — spilled to CPU (slow)"
+    deliver(pattern, out, warn)
+
+
+# ---------- IPC loop --------------------------------------------------------
+def ipc_loop():
+    spawn_daemon()  # warm the daemon while the user types
+    id_map = {}
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            req = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(req, str):
+            if req == "Exit":
+                break
+            continue
+        if "Search" in req:
+            raw = req["Search"]
+            query = PREFIX.sub("", raw)
+            id_map = {}
+            for i, name in enumerate(match(query, patterns())):
+                id_map[i] = name
+                tier = "scribe" if name.startswith("scribe-") else "fabric"
+                emit({"Append": {"id": i, "name": name,
+                                 "description": f"Run «{name}» on the selection · {tier}", "icon": ICON}})
+            emit("Finished")
+            log(f"Search raw={raw!r} → {len(id_map)} results")
+        elif "Activate" in req:
+            rid = req["Activate"]
+            pattern = id_map.get(rid)
+            log(f"Activate id={rid} pattern={pattern!r}")
+            if pattern is None:
+                emit("Close")
+                continue
+            sel = selection()
+            log(f"  selection: {len(sel)} chars; preview={sel[:60]!r}")
+            if not sel.strip():
+                notify("fabric", "No text selected (highlight something first).")
+                emit("Close")
+                continue
+            tf = tempfile.NamedTemporaryFile("w", delete=False, prefix="cosmic-fabric-")
+            tf.write(sel)
+            tf.close()
+            subprocess.Popen([SCRIPT, "--run", pattern, tf.name], start_new_session=True,
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            notify(f"fabric: {pattern}", f"running on {len(sel)} chars…")
+            emit("Close")
+
+
+def main():
+    if len(sys.argv) >= 4 and sys.argv[1] == "--run":
+        run_worker(sys.argv[2], sys.argv[3])
+    else:
+        ipc_loop()
+
+
+if __name__ == "__main__":
+    main()

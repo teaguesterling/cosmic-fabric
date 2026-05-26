@@ -1,0 +1,125 @@
+#!/usr/bin/env python3
+"""cosmic-fabricd — the cosmic-fabric backbone.
+
+Owns one fabric deployment: ensures `fabric --serve` is up, holds the policy,
+runs patterns over REST, checks GPU placement, and serves a unix-socket JSON API
+that thin clients (the launcher now; panel/settings later) call.
+
+Protocol: line-delimited JSON, one request → one response per line (json escapes
+newlines, so bodies stay single-line). Ops:
+  {"op":"ping"}                                  -> {"ok":true,"serve":bool}
+  {"op":"patterns"}                              -> {"patterns":[...]}
+  {"op":"run","pattern":P,"input":T,             -> {"output":...,"model":...,
+        "model"?:M,"vendor"?:V,"variables"?:{}}        "vendor":...,"placement":pct,"warn_below":n}
+                                                    or {"error":"..."}
+"""
+import json
+import os
+import socketserver
+import sys
+import threading
+import time
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import core  # noqa: E402
+
+LOG = os.path.expanduser("~/.cache/cosmic-fabric/daemon.log")
+_pat_cache = None
+_lock = threading.Lock()
+FAB = None
+
+
+def log(msg):
+    line = f"{time.strftime('%H:%M:%S')} [{os.getpid()}] {msg}"
+    print(line, file=sys.stderr, flush=True)
+    try:
+        os.makedirs(os.path.dirname(LOG), exist_ok=True)
+        with open(LOG, "a") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
+
+
+def sock_path():
+    base = os.environ.get("XDG_RUNTIME_DIR")
+    if not base:
+        base = os.path.expanduser("~/.cache/cosmic-fabric")
+        os.makedirs(base, exist_ok=True)
+    return os.path.join(base, "cosmic-fabric.sock")
+
+
+def handle(req):
+    op = req.get("op")
+    if op == "ping":
+        return {"ok": True, "serve": FAB.alive()}
+    if op == "patterns":
+        global _pat_cache
+        with _lock:
+            if _pat_cache is None:
+                _pat_cache = FAB.list_patterns()
+        return {"patterns": _pat_cache}
+    if op == "run":
+        pat = req.get("pattern")
+        if not pat:
+            return {"error": "missing pattern"}
+        pol = core.load_policy()  # re-read live so policy edits take effect
+        dmodel, dvendor, extra = core.resolve_model(pat, pol)
+        model = req.get("model") or dmodel
+        vendor = req.get("vendor") or dvendor
+        opts = core.extra_to_options(extra)
+        log(f"run pattern={pat} model={model} vendor={vendor} input={len(req.get('input',''))}ch opts={opts}")
+        try:
+            out = FAB.run(pat, req.get("input", ""), model, vendor, req.get("variables"), opts)
+        except Exception as e:
+            log(f"run error: {e}")
+            return {"error": str(e)}
+        pct = core.gpu_placement(model, pol["ollama"]["url"]) if (vendor or "").lower() == "ollama" else None
+        log(f"run done: {len(out)}ch placement={pct}")
+        return {"output": out, "model": model, "vendor": vendor,
+                "placement": pct, "warn_below": pol["ollama"].get("warn_below_gpu", 99)}
+    return {"error": f"unknown op {op!r}"}
+
+
+class Handler(socketserver.StreamRequestHandler):
+    def handle(self):
+        for raw in self.rfile:
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                req = json.loads(raw)
+            except Exception:
+                self.wfile.write(b'{"error":"bad json"}\n')
+                self.wfile.flush()
+                continue
+            resp = handle(req)
+            self.wfile.write((json.dumps(resp) + "\n").encode())
+            self.wfile.flush()
+
+
+class Server(socketserver.ThreadingUnixStreamServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+
+def main():
+    global FAB
+    FAB = core.FabricClient(log=log)
+    FAB.ensure_serve()
+    path = sock_path()
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        log(f"could not remove stale socket: {e}")
+    srv = Server(path, Handler)
+    log(f"listening on {path}")
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        pass
+
+
+if __name__ == "__main__":
+    main()

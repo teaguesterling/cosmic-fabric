@@ -1,0 +1,31 @@
+# cosmic-fabric deployment policy — per-pattern model/vendor for one fabric deployment.
+# Copy to ~/.config/cosmic-fabric/policy.toml (install.sh does this if absent).
+# A pattern not listed here uses [default]. `extra` = extra fabric CLI args.
+#
+# This is the single source of truth the launcher (and, later, the panel /
+# settings / daemon) all read — see doc/design.md.
+
+[default]
+model = "qwen3:14b-iq4xs"   # GPU-resident workhorse
+vendor = "Ollama"
+extra = ["--thinking=off", "--suppress-think"]   # qwen3: disable reasoning + strip any leaked <think> tags
+
+[output]
+# How the result is surfaced. The clipboard is ALWAYS set first as a backstop.
+#   notify    — notification with [View]/[Edit] buttons (default; non-intrusive)
+#   dialog    — pop a scrollable zenity window immediately
+#   edit      — open the result in cosmic-edit immediately
+#   clipboard — copy + a plain notification, no buttons
+mode = "notify"
+
+[ollama]
+# ollama isn't on PATH (it's the system service). `url` is used now for the
+# post-run GPU-placement check; `bin` is reserved for the future daemon (lifecycle).
+bin = "/opt/ollama/bin/ollama"
+url = "http://localhost:11434"
+warn_below_gpu = 99   # notify if an Ollama run lands below this % on the GPU (spilled to CPU)
+
+[patterns]
+# Most text verbs run local on iq4xs (the default). Overrides:
+scribe-visualize = { model = "claude-sonnet-4-6", vendor = "Anthropic", extra = [] }  # needs tool execution
+# scribe-summarize = { model = "claude-haiku-4-5", vendor = "Anthropic", extra = [] }  # uncomment for cloud-grade summaries

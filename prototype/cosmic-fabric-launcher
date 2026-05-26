@@ -1,0 +1,353 @@
+#!/usr/bin/env python3
+"""cosmic-fabric-launcher — Phase-0 pop-launcher plugin.
+
+Two modes:
+  (no args)                     pop-launcher JSON-IPC loop (the plugin)
+  --run PATTERN MODEL VENDOR IN  detached worker: run fabric, wl-copy, notify
+
+The IPC loop reads one Request JSON per line on stdin and writes PluginResponse
+JSON per line on stdout (pop-launcher protocol). On Activate it captures the
+PRIMARY selection, spawns itself in --run mode (so the launcher closes instantly),
+and returns Close. The worker runs `fabric` via the CLI, copies the result to the
+clipboard, and shows a notification preview.
+
+Phase-0 deliberately uses the `fabric` CLI (not the REST API) and delivers output
+to the clipboard (not inline). See doc/design.md.
+"""
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+
+# fabric lives in ~/.local/bin, which pop-launcher's env may not include.
+os.environ["PATH"] = os.path.expanduser("~/.local/bin") + os.pathsep + os.environ.get("PATH", "")
+
+SCRIPT = os.path.realpath(sys.argv[0])
+PREFIX = re.compile(r"^\s*fab(ric)?\s+", re.IGNORECASE)
+ICON = {"Name": "text-x-generic"}
+PREVIEW_CHARS = 240
+CAP = 12  # max results shown
+LOG = os.path.expanduser("~/.cache/cosmic-fabric/launcher.log")
+
+
+# ---------- policy ----------------------------------------------------------
+def load_policy():
+    """~/.config/cosmic-fabric/policy.toml → (default, {pattern: cfg}). Lenient."""
+    path = os.path.expanduser("~/.config/cosmic-fabric/policy.toml")
+    default = {"model": "qwen3:14b-iq4xs", "vendor": "Ollama", "extra": []}
+    patterns = {}
+    try:
+        import tomllib
+        with open(path, "rb") as f:
+            data = tomllib.load(f)
+        default = {**default, **data.get("default", {})}
+        patterns = data.get("patterns", {})
+    except FileNotFoundError:
+        pass
+    except Exception as e:  # malformed policy shouldn't break the launcher
+        log(f"policy load error: {e}")
+    return default, patterns
+
+
+def resolve_model(pattern, default, patterns):
+    cfg = {**default, **patterns.get(pattern, {})}
+    return cfg.get("model"), cfg.get("vendor"), cfg.get("extra", []) or []
+
+
+# ---------- fabric ----------------------------------------------------------
+_pattern_cache = None
+
+
+def list_patterns():
+    global _pattern_cache
+    if _pattern_cache is None:
+        try:
+            out = subprocess.run(["fabric", "-l"], capture_output=True, text=True,
+                                  timeout=15, stdin=subprocess.DEVNULL)
+            names = [ln.strip() for ln in out.stdout.splitlines() if ln.strip()]
+        except Exception as e:
+            log(f"fabric -l failed: {e}")
+            names = []
+        # scribe-* first, then the rest, each alphabetical
+        scribe = sorted(n for n in names if n.startswith("scribe-"))
+        rest = sorted(n for n in names if not n.startswith("scribe-"))
+        _pattern_cache = scribe + rest
+    return _pattern_cache
+
+
+def match(query, names):
+    """Curated-first: show `scribe-*` by default; only reach the ~250 built-ins
+    when no scribe pattern matches, or when the query is prefixed with `!`."""
+    q = query.strip().lower()
+    force_all = q.startswith("!")
+    if force_all:
+        q = q[1:].strip()
+    scribe = [n for n in names if n.startswith("scribe-")]
+    if not q:
+        return (names if force_all else scribe)[:CAP]
+    if force_all:
+        return [n for n in names if q in n.lower()][:CAP]
+    hits = [n for n in scribe if q in n.lower()]
+    if not hits:  # no curated match → fall back to the full library
+        hits = [n for n in names if q in n.lower()]
+    return hits[:CAP]
+
+
+# ---------- helpers ---------------------------------------------------------
+def log(msg):
+    print(f"[cosmic-fabric] {msg}", file=sys.stderr, flush=True)
+    try:  # pop-launcher discards stderr — persist to a file for diagnosis
+        os.makedirs(os.path.dirname(LOG), exist_ok=True)
+        with open(LOG, "a") as f:
+            f.write(f"{time.strftime('%H:%M:%S')} [{os.getpid():>6}] {msg}\n")
+    except Exception:
+        pass
+
+
+def emit(obj):
+    print(json.dumps(obj), flush=True)
+
+
+def selection():
+    """PRIMARY selection, falling back to the clipboard."""
+    for args in (["wl-paste", "-p", "-n"], ["wl-paste", "-n"]):
+        try:
+            r = subprocess.run(args, capture_output=True, text=True, timeout=3,
+                               stdin=subprocess.DEVNULL)
+            if r.returncode == 0 and r.stdout.strip():
+                return r.stdout
+        except Exception:
+            pass
+    return ""
+
+
+def notify(title, body):
+    try:
+        subprocess.run(["notify-send", title, body], timeout=5, stdin=subprocess.DEVNULL)
+    except Exception:
+        pass  # notifications are best-effort
+
+
+# ---------- ollama placement check ------------------------------------------
+def load_ollama_cfg():
+    cfg = {"bin": "/opt/ollama/bin/ollama", "url": "http://localhost:11434", "warn_below_gpu": 99}
+    try:
+        import tomllib
+        with open(os.path.expanduser("~/.config/cosmic-fabric/policy.toml"), "rb") as f:
+            cfg.update(tomllib.load(f).get("ollama", {}) or {})
+    except Exception:
+        pass
+    return cfg
+
+
+def gpu_placement(model):
+    """% of the model resident in VRAM right after a run (None if unknown).
+    Uses /api/ps over HTTP — no ollama binary needed."""
+    import urllib.request
+    cfg = load_ollama_cfg()
+    try:
+        with urllib.request.urlopen(cfg["url"].rstrip("/") + "/api/ps", timeout=5) as resp:
+            data = json.load(resp)
+        for m in data.get("models", []):
+            if model in (m.get("model"), m.get("name")):
+                size, vram = m.get("size", 0), m.get("size_vram", 0)
+                return (100.0 * vram / size) if size else None
+    except Exception as e:
+        log(f"placement check failed: {e}")
+    return None
+
+
+# ---------- result delivery -------------------------------------------------
+def load_output_mode():
+    """[output].mode in policy.toml: notify | dialog | edit | clipboard."""
+    try:
+        import tomllib
+        with open(os.path.expanduser("~/.config/cosmic-fabric/policy.toml"), "rb") as f:
+            return (tomllib.load(f).get("output", {}) or {}).get("mode", "notify")
+    except Exception:
+        return "notify"
+
+
+def clip(text):
+    try:
+        subprocess.run(["wl-copy"], input=text, text=True, timeout=5, stdin=None)
+    except Exception as e:
+        log(f"wl-copy failed: {e}")
+
+
+def show_dialog(pattern, text):
+    if not shutil.which("zenity"):
+        log("zenity missing; skipping dialog")
+        return
+    try:  # blocks until closed — fine, the worker is detached
+        subprocess.run(["zenity", "--text-info", "--title", f"fabric: {pattern}",
+                        "--width", "760", "--height", "520"],
+                       input=text, text=True, timeout=3600, stdin=None)
+    except Exception as e:
+        log(f"zenity failed: {e}")
+
+
+def open_edit(pattern, text):
+    try:
+        tf = tempfile.NamedTemporaryFile("w", delete=False, suffix=".md",
+                                         prefix=f"fabric-{pattern}-")
+        tf.write(text)
+        tf.close()
+        subprocess.Popen(["cosmic-edit", tf.name], start_new_session=True,
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception as e:
+        log(f"cosmic-edit failed: {e}")
+
+
+def notify_actions(title, body):
+    """Notification with [View]/[Edit] buttons; returns the chosen action name."""
+    try:
+        r = subprocess.run(["notify-send", "--wait", "-t", "30000",
+                            "-A", "view=View", "-A", "edit=Edit", title, body],
+                           capture_output=True, text=True, timeout=45, stdin=subprocess.DEVNULL)
+        return r.stdout.strip()
+    except Exception as e:
+        log(f"notify-actions failed/timeout: {e}")
+        return ""
+
+
+def deliver(pattern, text, warn=""):
+    """Always clip() first (backstop), then surface per [output].mode.
+    `warn` (e.g. a CPU-spill notice) is prepended to the notification."""
+    clip(text)
+    mode = load_output_mode()
+    n = len(text)
+    head = (warn + "\n" if warn else "") + f"✓ copied ({n} chars)"
+    preview = text[:PREVIEW_CHARS] + ("…" if n > PREVIEW_CHARS else "")
+    log(f"deliver mode={mode} ({n} chars) warn={warn!r}")
+    if mode == "dialog":
+        notify(f"fabric: {pattern}", head + " — opening…")
+        show_dialog(pattern, text)
+    elif mode == "edit":
+        notify(f"fabric: {pattern}", head + " — opening editor…")
+        open_edit(pattern, text)
+    elif mode == "notify":
+        action = notify_actions(f"fabric: {pattern}", f"{head}\n\n{preview}")
+        log(f"  action={action!r}")
+        if action == "view":
+            show_dialog(pattern, text)
+        elif action == "edit":
+            open_edit(pattern, text)
+    else:  # "clipboard"
+        notify(f"fabric: {pattern}", f"{head}\n\n{preview}")
+
+
+# ---------- worker (--run) --------------------------------------------------
+def run_worker(pattern, model, vendor, infile, extra):
+    try:
+        with open(infile) as f:
+            text = f.read()
+    finally:
+        try:
+            os.unlink(infile)
+        except OSError:
+            pass
+    cmd = ["fabric", "-p", pattern, "-m", model, "-V", vendor, *extra]
+    log(f"worker run: {' '.join(cmd)}  (input {len(text)} chars)")
+    try:
+        r = subprocess.run(cmd, input=text, capture_output=True, text=True, timeout=300)
+    except Exception as e:
+        log(f"worker fabric exception: {e}")
+        notify("fabric: error", f"{pattern}: {e}")
+        return
+    log(f"worker done: rc={r.returncode} stdout={len(r.stdout)} stderr={r.stderr.strip()[:200]!r}")
+    out = r.stdout.strip()
+    if not out:
+        notify("fabric: empty result", f"{pattern} returned nothing\n{r.stderr.strip()[:PREVIEW_CHARS]}")
+        return
+    warn = ""
+    if vendor.lower() == "ollama":
+        pct = gpu_placement(model)
+        if pct is not None:
+            log(f"placement: {pct:.0f}% GPU ({model})")
+            if pct < load_ollama_cfg().get("warn_below_gpu", 99):
+                warn = f"⚠ {pct:.0f}% GPU — spilled to CPU (slow)"
+    deliver(pattern, out, warn)
+
+
+# ---------- IPC loop --------------------------------------------------------
+def ipc_loop():
+    id_map = {}  # result id -> pattern name, from the last Search
+
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            req = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+        # bare-string variants: "Interrupt", "Exit"
+        if isinstance(req, str):
+            if req in ("Exit", "Interrupt"):
+                if req == "Exit":
+                    break
+            continue
+
+        if "Search" in req:
+            raw = req["Search"]
+            query = PREFIX.sub("", raw)
+            id_map = {}
+            for i, name in enumerate(match(query, list_patterns())):
+                id_map[i] = name
+                tier = "scribe" if name.startswith("scribe-") else "fabric"
+                emit({"Append": {
+                    "id": i,
+                    "name": name,
+                    "description": f"Run «{name}» on the selection · {tier}",
+                    "icon": ICON,
+                }})
+            emit("Finished")
+            log(f"Search raw={raw!r} stripped={query!r} → {len(id_map)} results")
+
+        elif "Activate" in req:
+            rid = req["Activate"]
+            pattern = id_map.get(rid)
+            log(f"Activate id={rid} pattern={pattern!r}")
+            if pattern is None:
+                emit("Close")
+                continue
+            sel = selection()
+            log(f"  selection: {len(sel)} chars; preview={sel[:60]!r}")
+            if not sel.strip():
+                notify("fabric", "No text selected (highlight something first).")
+                emit("Close")
+                continue
+            default, patterns = load_policy()  # re-read each run so policy edits go live
+            model, vendor, extra = resolve_model(pattern, default, patterns)
+            tf = tempfile.NamedTemporaryFile("w", delete=False, prefix="cosmic-fabric-")
+            tf.write(sel)
+            tf.close()
+            subprocess.Popen(
+                [SCRIPT, "--run", pattern, model, vendor, tf.name, *extra],
+                start_new_session=True,
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            notify(f"fabric: {pattern}", f"running on {len(sel)} chars via {model}…")
+            emit("Close")
+
+        elif "Complete" in req or "Context" in req or "ActivateContext" in req or "Quit" in req:
+            # not used in Phase-0
+            pass
+
+
+def main():
+    if len(sys.argv) >= 6 and sys.argv[1] == "--run":
+        # --run PATTERN MODEL VENDOR INFILE [extra...]
+        run_worker(sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6:])
+    else:
+        ipc_loop()
+
+
+if __name__ == "__main__":
+    main()
