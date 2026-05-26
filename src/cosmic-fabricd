@@ -89,8 +89,38 @@ def handle(req):
     return {"error": f"unknown op {op!r}"}
 
 
+def stream_run(req, send):
+    """`{"op":"run","stream":true}` → a sequence of {"chunk":...} lines then a
+    final {"done":true, model, placement, ...} line (or {"error":...})."""
+    pat = req.get("pattern")
+    if not pat:
+        send({"error": "missing pattern"})
+        return
+    pol = core.load_policy()
+    dmodel, dvendor, extra = core.resolve_model(pat, pol)
+    model = req.get("model") or dmodel
+    vendor = req.get("vendor") or dvendor
+    opts = core.extra_to_options(extra)
+    log(f"run-stream pattern={pat} model={model} vendor={vendor}")
+    try:
+        FAB.run(pat, req.get("input", ""), model, vendor, req.get("variables"), opts,
+                on_chunk=lambda c: send({"chunk": c}))
+    except Exception as e:
+        log(f"run-stream error: {e}")
+        send({"error": str(e)})
+        return
+    pct = core.gpu_placement(model, pol["ollama"]["url"]) if (vendor or "").lower() == "ollama" else None
+    log(f"run-stream done: placement={pct}")
+    send({"done": True, "model": model, "vendor": vendor,
+          "placement": pct, "warn_below": pol["ollama"].get("warn_below_gpu", 99)})
+
+
 class Handler(socketserver.StreamRequestHandler):
     def handle(self):
+        def send(obj):
+            self.wfile.write((json.dumps(obj) + "\n").encode())
+            self.wfile.flush()
+
         for raw in self.rfile:
             raw = raw.strip()
             if not raw:
@@ -98,12 +128,12 @@ class Handler(socketserver.StreamRequestHandler):
             try:
                 req = json.loads(raw)
             except Exception:
-                self.wfile.write(b'{"error":"bad json"}\n')
-                self.wfile.flush()
+                send({"error": "bad json"})
                 continue
-            resp = handle(req)
-            self.wfile.write((json.dumps(resp) + "\n").encode())
-            self.wfile.flush()
+            if req.get("op") == "run" and req.get("stream"):
+                stream_run(req, send)
+            else:
+                send(handle(req))
 
 
 class Server(socketserver.ThreadingUnixStreamServer):

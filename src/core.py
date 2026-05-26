@@ -113,8 +113,10 @@ class FabricClient:
             self.log(f"list_models failed: {e}")
             return []
 
-    def run(self, pattern, user_input, model, vendor, variables=None, options=None, timeout=600):
-        """POST /chat (SSE) → accumulated text. Raises on a fabric error event."""
+    def run(self, pattern, user_input, model, vendor, variables=None, options=None,
+            timeout=600, on_chunk=None):
+        """POST /chat (SSE) → accumulated text. If `on_chunk` is given, it's
+        called with each content fragment as it streams. Raises on error."""
         body = {
             "prompts": [{
                 "userInput": user_input,
@@ -151,6 +153,8 @@ class FabricClient:
                     err = ev.get("content") or "fabric error"
                 if ev.get("content"):
                     out.append(ev["content"])
+                    if on_chunk:
+                        on_chunk(ev["content"])
         if err:
             raise RuntimeError(err)
         return "".join(out).strip()
