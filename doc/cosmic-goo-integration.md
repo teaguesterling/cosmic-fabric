@@ -109,11 +109,13 @@ Ordered by how much they could force design changes.
    Either goo resolves to `.text` first, or the daemon grows typed-input handling
    (url → fabric `-u`, file → read, `-a` attachment). *Lean: v1 fabric verbs take
    text subjects only; url/pdf/image later.*
-2. **`claude://` can't carry a big assembled prompt (threatens the headline
-   feature).** `?q=` seeds a **user message, not a system prompt**, and has a
-   **URL-length limit** a system-prompt + long document will exceed. The
-   assemble→Claude seed may need clipboard-and-paste, a temp file, or the API
-   instead of `claude://?q=`. *Decide before committing to `claude://?q=`.*
+2. **`claude://` can't carry a big assembled prompt** — *resolved by design
+   (deferred).* `?q=` would seed a user message and hit URL-length limits. The
+   fix: a **content-staging layer** (internal buffer / tmpfile / upload) holds the
+   payload, and the agent launch (`claude://`, etc.) carries a **reference** to
+   the staged content, not the inline prompt — i.e. "references, not data" applied
+   to hand-offs. Future work; the *same* staging layer also covers #1's
+   large/non-text inputs.
 3. **A channel-agnostic verb is carrying fabric-specific config (architectural).**
    `fabric_pattern` + default sub-channel + adverb-names-that-match-`{{vars}}` are
    fabric coupling on a neutral verb. *Lean: a `[verb.channels.fabric]` block,
@@ -134,6 +136,8 @@ Ordered by how much they could force design changes.
    only because `scribe-think` uses `{{depth}}`; a rename silently breaks.
    *Needs an explicit adverb→var declaration on the verb.*
 
-**Load-bearing:** #2 (`claude://` limits) and #1 (subject→text) could force
-changes — resolve before building. #3 is the architectural one to get right
-early. #4–7 are mechanical (encoding choices, not blockers).
+**Load-bearing:** #2 is resolved by design (the deferred staging layer), which
+also absorbs #1's hard cases — so the remaining *foundational* call is just how
+much of subject→text goo does before that layer exists (lean: text subjects in
+v1). #3 (verb/channel coupling) is the architectural one to get right early.
+#4–7 are mechanical (encoding choices, not blockers).
