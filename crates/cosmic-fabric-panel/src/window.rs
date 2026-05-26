@@ -1,6 +1,6 @@
-//! The libcosmic panel applet: an icon that opens a popup showing the fabric
-//! deployment status from `cosmic-fabricd`. (Status-only first slice; quick-run
-//! + a result pane come next.)
+//! The libcosmic panel applet: an icon → popup with deployment status and a
+//! quick-run pane (pick a `scribe-*` pattern → run it on the clipboard → see the
+//! result). All work goes through `cosmic-fabricd` over the socket.
 
 use cosmic::{
     app,
@@ -10,16 +10,20 @@ use cosmic::{
         widget::Column,
         window, Length,
     },
-    widget::{button, container, divider, text},
+    widget::{button, container, divider, scrollable, text},
     Element,
 };
 
-use crate::daemon::{self, Status};
+use crate::daemon::{self, RunResult, Status};
 
 pub struct Window {
     core: cosmic::app::Core,
     popup: Option<window::Id>,
     status: Option<Status>,
+    patterns: Vec<String>,
+    result: Option<String>,
+    result_meta: Option<String>,
+    running: bool,
     error: Option<String>,
 }
 
@@ -29,6 +33,10 @@ pub enum Message {
     CloseRequested(window::Id),
     Refresh,
     StatusDone(Result<Status, String>),
+    PatternsDone(Result<Vec<String>, String>),
+    RunPattern(String),
+    RunDone(Result<RunResult, String>),
+    CopyResult,
 }
 
 impl cosmic::Application for Window {
@@ -43,6 +51,10 @@ impl cosmic::Application for Window {
                 core,
                 popup: None,
                 status: None,
+                patterns: Vec::new(),
+                result: None,
+                result_meta: None,
+                running: false,
                 error: None,
             },
             app::Task::none(),
@@ -52,11 +64,9 @@ impl cosmic::Application for Window {
     fn core(&self) -> &cosmic::app::Core {
         &self.core
     }
-
     fn core_mut(&mut self) -> &mut cosmic::app::Core {
         &mut self.core
     }
-
     fn style(&self) -> Option<cosmic::iced::theme::Style> {
         Some(cosmic::applet::style())
     }
@@ -76,7 +86,7 @@ impl cosmic::Application for Window {
                     None,
                     None,
                 );
-                cosmic::Task::batch([get_popup(popup_settings), status_task()])
+                cosmic::Task::batch([get_popup(popup_settings), status_task(), patterns_task()])
             }
             Message::CloseRequested(id) => {
                 if self.popup == Some(id) {
@@ -84,14 +94,58 @@ impl cosmic::Application for Window {
                 }
                 app::Task::none()
             }
-            Message::Refresh => status_task(),
+            Message::Refresh => cosmic::Task::batch([status_task(), patterns_task()]),
             Message::StatusDone(Ok(s)) => {
                 self.status = Some(s);
-                self.error = None;
                 app::Task::none()
             }
             Message::StatusDone(Err(e)) => {
                 self.error = Some(e);
+                app::Task::none()
+            }
+            Message::PatternsDone(Ok(p)) => {
+                self.patterns = p;
+                app::Task::none()
+            }
+            Message::PatternsDone(Err(e)) => {
+                self.error = Some(e);
+                app::Task::none()
+            }
+            Message::RunPattern(pattern) => {
+                let input = daemon::clipboard();
+                if input.trim().is_empty() {
+                    self.error = Some("Clipboard is empty — copy some text first.".into());
+                    return app::Task::none();
+                }
+                self.running = true;
+                self.result = None;
+                self.result_meta = None;
+                self.error = None;
+                cosmic::Task::perform(daemon::run(pattern, input), |r| {
+                    cosmic::Action::App(Message::RunDone(r))
+                })
+            }
+            Message::RunDone(res) => {
+                self.running = false;
+                match res {
+                    Ok(r) if r.error.is_some() => self.error = r.error,
+                    Ok(r) => {
+                        self.result = r.output;
+                        let model = r.model.unwrap_or_default();
+                        let place = r
+                            .placement
+                            .map(|p| format!(" \u{00b7} {p:.0}% GPU"))
+                            .unwrap_or_default();
+                        self.result_meta = Some(format!("{model}{place}"));
+                    }
+                    Err(e) => self.error = Some(e),
+                }
+                app::Task::none()
+            }
+            Message::CopyResult => {
+                if let Some(r) = &self.result {
+                    daemon::set_clipboard(r);
+                }
                 app::Task::none()
             }
         }
@@ -107,44 +161,57 @@ impl cosmic::Application for Window {
 
     fn view_window(&self, _id: window::Id) -> Element<'_, Message> {
         let mut col = Column::new().spacing(6).padding([8, 0]);
-        col = col.push(padded_control(text::heading("Fabric")));
 
-        match &self.status {
-            Some(s) => {
-                col = col.push(padded_control(text::body(format!(
-                    "serve: {}",
-                    if s.serve { "\u{25cf} up" } else { "\u{25cb} down" }
-                ))));
-                if let (Some(m), Some(v)) = (&s.default_model, &s.default_vendor) {
-                    col = col.push(padded_control(text::body(format!("default: {m} ({v})"))));
-                }
-                if s.loaded.is_empty() {
-                    col = col.push(padded_control(text::caption("no model loaded")));
-                } else {
-                    for l in &s.loaded {
-                        let m = l.model.clone().unwrap_or_default();
-                        let pct = l
-                            .gpu_pct
-                            .map(|p| format!("{p:.0}% GPU"))
-                            .unwrap_or_default();
-                        let ctx = l.ctx.map(|c| format!(", ctx {c}")).unwrap_or_default();
-                        col = col.push(padded_control(text::body(format!("{m}: {pct}{ctx}"))));
-                    }
-                }
-                if let Some(vr) = &s.vram {
-                    col = col.push(padded_control(text::caption(format!(
-                        "VRAM: {} / {} MiB free",
-                        vr.free, vr.total
-                    ))));
-                }
+        // ---- status ----
+        if let Some(s) = &self.status {
+            let serve = if s.serve { "\u{25cf} up" } else { "\u{25cb} down" };
+            let model = match (&s.default_model, &s.default_vendor) {
+                (Some(m), Some(v)) => format!("{m} ({v})"),
+                _ => "—".into(),
+            };
+            let gpu = s
+                .loaded
+                .first()
+                .and_then(|l| l.gpu_pct)
+                .map(|p| format!(" \u{00b7} {p:.0}% GPU"))
+                .unwrap_or_default();
+            col = col.push(padded_control(text::caption(format!(
+                "serve {serve}  \u{00b7}  {model}{gpu}"
+            ))));
+        }
+
+        // ---- quick run ----
+        col = col.push(padded_control(text::heading("Run on clipboard")));
+        let mut list = Column::new().spacing(2);
+        for name in self.patterns.iter().filter(|n| n.starts_with("scribe-")) {
+            list = list.push(
+                button::text(name.clone())
+                    .width(Length::Fill)
+                    .on_press(Message::RunPattern(name.clone())),
+            );
+        }
+        col = col.push(padded_control(
+            scrollable(list).height(Length::Fixed(160.0)),
+        ));
+
+        // ---- result ----
+        if self.running {
+            col = col.push(padded_control(text::body("running\u{2026}")));
+        }
+        if let Some(out) = &self.result {
+            col = col.push(padded_control(divider::horizontal::default()));
+            if let Some(meta) = &self.result_meta {
+                col = col.push(padded_control(text::caption(meta.clone())));
             }
-            None => {
-                col = col.push(padded_control(text::body(
-                    self.error
-                        .clone()
-                        .unwrap_or_else(|| "loading\u{2026}".into()),
-                )));
-            }
+            col = col.push(padded_control(
+                scrollable(text::body(out.clone())).height(Length::Fixed(180.0)),
+            ));
+            col = col.push(padded_control(
+                button::text("Copy").on_press(Message::CopyResult),
+            ));
+        }
+        if let Some(err) = &self.error {
+            col = col.push(padded_control(text::caption(err.clone())));
         }
 
         col = col.push(padded_control(divider::horizontal::default()));
@@ -154,7 +221,7 @@ impl cosmic::Application for Window {
 
         self.core
             .applet
-            .popup_container(container(col).width(Length::Fixed(300.0)))
+            .popup_container(container(col).width(Length::Fixed(340.0)))
             .into()
     }
 
@@ -166,5 +233,11 @@ impl cosmic::Application for Window {
 fn status_task() -> app::Task<Message> {
     cosmic::Task::perform(daemon::status(), |r| {
         cosmic::Action::App(Message::StatusDone(r))
+    })
+}
+
+fn patterns_task() -> app::Task<Message> {
+    cosmic::Task::perform(daemon::patterns(), |r| {
+        cosmic::Action::App(Message::PatternsDone(r))
     })
 }

@@ -64,3 +64,45 @@ pub async fn status() -> Result<Status, String> {
     let v = call(serde_json::json!({ "op": "status" })).await?;
     serde_json::from_value(v).map_err(|e| e.to_string())
 }
+
+pub async fn patterns() -> Result<Vec<String>, String> {
+    let v = call(serde_json::json!({ "op": "patterns" })).await?;
+    let arr = v.get("patterns").cloned().unwrap_or_default();
+    serde_json::from_value(arr).map_err(|e| e.to_string())
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct RunResult {
+    pub output: Option<String>,
+    pub model: Option<String>,
+    pub placement: Option<f64>,
+    pub error: Option<String>,
+}
+
+pub async fn run(pattern: String, input: String) -> Result<RunResult, String> {
+    let v = call(serde_json::json!({ "op": "run", "pattern": pattern, "input": input })).await?;
+    serde_json::from_value(v).map_err(|e| e.to_string())
+}
+
+/// Current clipboard text (the panel's quick-run input source).
+pub fn clipboard() -> String {
+    std::process::Command::new("wl-paste")
+        .arg("-n")
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        .unwrap_or_default()
+}
+
+pub fn set_clipboard(text: &str) {
+    use std::io::Write;
+    if let Ok(mut c) = std::process::Command::new("wl-copy")
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+    {
+        if let Some(si) = c.stdin.as_mut() {
+            let _ = si.write_all(text.as_bytes());
+        }
+        let _ = c.wait();
+    }
+}
