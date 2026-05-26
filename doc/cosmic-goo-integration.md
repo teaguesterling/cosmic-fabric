@@ -27,20 +27,35 @@ The division that resolves "can we send to Claude Desktop?":
 So the `scribe-*` patterns are **dual-use**: run locally on iq4xs, *or* launch
 into a full Claude conversation — same pattern, different destination.
 
-## The `To:` destination decides run-vs-assemble
+## Two fabric sub-channels: `inference` and `assemble`
+
+fabric exposes **two capability sub-channels** under its domain — `Using:` picks
+*what fabric produces*, `To:` picks *where it goes* (orthogonal, any combination):
+
+- **`goo://channel/fabric/inference`** *(default for bare `goo://channel/fabric`)*
+  → daemon **`run`** (+ stream / broadcast). Produces a **result**.
+- **`goo://channel/fabric/assemble`** → daemon **`assemble`**. Produces a
+  rendered **prompt** (no model run).
 
 ```
-SUMMARIZE      goo://sel/  Using: fabric                          # run → result back
-SUMMARIZE      goo://sel/  Using: fabric  To: goo://chat/notes    # run → result to a sink
-DRAFT-RESPONSE goo://sel/  Using: fabric  To: claude://desktop    # assemble → open Claude with the prompt
+SUMMARIZE      goo://sel/  Using: fabric/inference                 # run → result back
+SUMMARIZE      goo://sel/  Using: fabric/inference  To: goo://chat/notes   # result → a sink
+DRAFT-RESPONSE goo://sel/  Using: fabric/assemble   To: claude://desktop   # prompt → open Claude
+DRAFT-RESPONSE goo://sel/  Using: fabric/assemble   To: goo://clip/        # prompt → clipboard
+SUMMARIZE      goo://sel/  Using: fabric/inference  To: claude://desktop   # result → seed Claude as context
 ```
 
-| `To:` is a… | examples | daemon op | goo then |
-|---|---|---|---|
-| **sink** (passive) | return, clipboard, panel, a notes chat | **`run`** / `run`-stream | deliver the *result* |
-| **agent** (executes) | claude-desktop, claude-code, alpaca | **`assemble`** | open it seeded with the *prompt* |
+| `Using:` | produces | `To:` (any sink/agent) |
+|---|---|---|
+| `fabric/inference` *(default)* | a **result** | return · clipboard · panel · chat · an agent (as context) |
+| `fabric/assemble` | a **prompt** | claude://desktop/code · clipboard · file |
 
-sink-vs-agent is a property the `To:` handler/domain declares.
+`OPTIONS goo://channel/fabric` lists the sub-channels (and their ops). The
+verb may declare a *default* sub-channel (e.g. `draft-response` → `assemble`,
+`summarize` → `inference`); otherwise bare `fabric` = `inference`.
+
+**No daemon change:** the sub-channels are pure goo addressing —
+`inference`→`run`, `assemble`→`assemble` — over the ops cosmic-fabricd already has.
 
 ## Daemon ops goo uses (all on the unix socket, line-JSON)
 
@@ -54,9 +69,10 @@ sink-vs-agent is a property the `To:` handler/domain declares.
 
 1. A **`fabric` channel handler** (the `Using: goo://channel/fabric` target) — a
    thin client of the daemon socket.
-2. **Route by `To:`**: agent destinations → `assemble` then the existing
-   `claude://` (and clipboard/code) hand-off, seeding `q=<prompt>`; sink / no
-   destination → `run` (or `run`-stream / `broadcast` to the panel).
+2. **Map the two sub-channels to daemon ops** — `fabric/inference` → `run`
+   (+ stream / `broadcast` to the panel); `fabric/assemble` → `assemble`. Then
+   send the produced output to `To:` **uniformly** (claude:// hand-off,
+   clipboard, file, panel) — `To:` is just the destination, not a mode switch.
 3. Surface the `scribe-*` verbs (from `{"op":"patterns"}`) + their adverbs
    (`{{lang}}`/`{{depth}}`/… → `With:`/`-v`) in goo's grammar.
 
