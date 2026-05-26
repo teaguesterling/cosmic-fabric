@@ -76,6 +76,28 @@ Near-term cheap experiment (no ladder yet): bake/test `iq4xs` at `num_ctx 8192` 
 q8 KV — if it still loads 100% GPU, just raise the single default and most inputs are
 covered without a ladder.
 
+## Deferred: launcher → panel result handoff
+
+Goal: the launcher dispatches a run and the **panel** shows the streaming result
+(retiring the launcher's `notify-send --wait` hang), with the launcher's
+clipboard/notify path kept as the standalone fallback.
+
+Design (build with live eyes — the panel auto-open is the unverifiable part):
+- **Daemon broker:** a `{"op":"subscribe"}` op holds a persistent connection;
+  a run sent with `"broadcast": true` is run as a stream *and* its
+  chunk/done lines are pushed to every subscriber. (Subscriber list + a lock;
+  the stream op already exists.)
+- **Panel:** a long-lived `Subscription` on `subscribe`; an incoming run opens
+  the popup (reuse the `get_popup` path) and feeds the existing
+  `RunEvent` handling.
+- **Launcher:** a `policy.toml` `[output] mode = "panel"` (opt-in, default
+  unchanged so the launcher never regresses) that sends `broadcast` instead of
+  running + delivering itself.
+
+Building blocks in place: the daemon `run`-stream op and the panel's `RunEvent`
+streaming. Remaining: the broker (socket-testable) + the panel auto-open
+(needs an in-panel check).
+
 ## Standalone-from-goo
 
 The launcher speaks pop-launcher's line-JSON — the *same surface* a future goo

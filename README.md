@@ -32,7 +32,8 @@ Requires `fabric` (in `~/.local/bin`), `wl-clipboard`, `python3` ≥ 3.11, `noti
 |---|---|---|
 | **0** | pop-launcher plugin prototype (fabric CLI, clipboard/dialog delivery) | ✅ `prototype/` (kept as reference) |
 | **1** | `cosmic-fabricd` daemon (REST/SSE, policy, placement) + thin socket-client launcher | ✅ `src/` (current) |
-| **2** | `cosmic-fabric-panel` + `cosmic-fabric-settings` (Rust/libcosmic) as daemon clients; context-tier sizing | ⬜ planned |
+| **2** | `cosmic-fabric-panel` libcosmic applet — status, quick-run with a **streaming** result pane, GPU-spill badge; + a **settings window** (`cosmic-fabric-panel settings`) editing `policy.toml` | ✅ `crates/` (current) |
+| **2b** | launcher→panel result handoff (daemon pub/sub broker); context-tier sizing | ⬜ planned |
 
 ## License
 

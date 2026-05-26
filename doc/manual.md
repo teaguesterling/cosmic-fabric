@@ -63,6 +63,33 @@ launcher; it also makes sure `fabric --serve` is running.
 | `fab summ` | `scribe-*` matches (falls back to built-ins if none match) |
 | `fab !youtube` | the **full** ~250 built-in library (the `!` prefix opens it) |
 
+## Panel applet & settings
+
+Build + install the libcosmic panel applet (Rust):
+
+```sh
+cd crates && just install      # release build → ~/.local/bin + .desktop + icon
+#   (or: just install-debug for a faster, larger debug binary)
+```
+Then add it: **cosmic-settings → Panel (or Dock) → Configure applets → add "Fabric"**.
+After a rebuild, reload it with `pkill cosmic-fabric-panel` (the panel respawns it).
+
+The applet (it talks to `cosmic-fabricd`, which the launcher auto-spawns — or run
+`cosmic-fabricd` once):
+- **Status** — fabric serve health, default model, loaded model + GPU% (with a
+  `⚠` when it has spilled to CPU), VRAM free.
+- **Quick-run** — pick a `scribe-*` pattern → it runs on the **clipboard** and the
+  result **streams** into a scrollable pane with a Copy button.
+- **Settings…** — opens the settings window.
+
+**Settings window** (`cosmic-fabric-panel settings`) edits `~/.config/cosmic-fabric/policy.toml`
+(auto-saves; the daemon re-reads per run):
+- default model + per-pattern model as tiers (Default / Local / Haiku / Sonnet),
+- result-delivery mode,
+- ollama URL + warn-below-GPU% threshold.
+
+For models beyond those tiers, edit `policy.toml` directly (below).
+
 ## Configuration
 
 Everything lives in **`~/.config/cosmic-fabric/policy.toml`**. It's re-read on every
