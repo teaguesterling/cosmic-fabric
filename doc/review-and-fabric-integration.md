@@ -143,7 +143,18 @@ variables = { depth = "medium" }   # default {{vars}}
   all switch to reading `surface.active`. Build curation once; every surface —
   and future context-menu/widget/selection surfaces — benefits.
 
-## Proposed next slice: **Pattern Library + per-pattern config** (the Workbench's reason to exist)
+## ✅ BUILT (2026-05-27, commit 0fb7f36): **Pattern Library + active-set profile**
+
+The spine landed: `[surface].active` in `policy.toml` is the curated working set
+**every surface reads** (loom Library, panel popup, settings, launcher), via
+`Policy::active_patterns` (Rust) / `core.active_patterns` (Python) + daemon
+`surface` op; empty → `scribe-*` fallback. The loom gained a **Run ⇄ Library**
+toggle; Library = search all 265 → ★ into the active set → per-pattern model
+tier. The hardcoded `scribe-` filter is gone from all 4 sites. *Remaining in this
+area:* full model/vendor picker (beyond the 4 tiers), per-pattern variables UI,
+surface-visibility (which surface shows a pattern).
+
+## (superseded) Proposed next slice: **Pattern Library + per-pattern config**
 
 Merges the user's two leanings (pattern discovery/selection/configuration **and**
 model/provider selection) into one coherent slice, and directly attacks "too much":

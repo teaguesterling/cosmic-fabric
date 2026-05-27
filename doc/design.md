@@ -186,6 +186,15 @@ shown disabled (need goo's route layer); popup→workspace handoff opens an *emp
 workspace (no `last_result` carry yet). The mockup (`panel-mockup.html`) shows the
 full target.
 
+### The profile / active-set (built 2026-05-27)
+
+`[surface].active` in `policy.toml` is the curated working set every surface
+reads (loom Library, panel, settings, launcher); empty → `scribe-*` fallback.
+The **loom** (workspace) has a Run ⇄ Library toggle; the Library searches all
+patterns, ★-toggles membership, and sets each one's model tier. Daemon `surface`
+op serves it to non-policy-aware clients (the launcher). This is the spine the
+"three surfaces" (loom/kit/session) share.
+
 ### Daemon ops added this pass
 
 - `{"op":"fetch","url":U,"mode":"scrape"|"readability"}` → `{"text":…,"chars":N}`.
