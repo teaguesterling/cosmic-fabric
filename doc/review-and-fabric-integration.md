@@ -94,3 +94,58 @@ The **daemon owns all fabric integration** (the "one channel"). As we add CLI
 shell-out for multimodal, session/context CRUD, strategy listing, etc., they all
 go in the **Python daemon**; the Rust panel stays a thin socket client. Don't let
 fabric calls leak into the Rust side.
+
+## Product model (settled with the user, 2026-05-27)
+
+**The Workbench is a configuration & personalization surface**, not a chat client.
+Its primary job: curate *how and what* of fabric's huge surface becomes *your*
+working set. The **daily drivers are the quick OS surfaces** — launcher, panel,
+context menus, selections, widgets — plus **handoffs** to more powerful systems
+(Claude, goo). Depth-of-conversation is a **handoff**, not something we rebuild
+(so **sessions drop in priority**; multi-turn lives in Claude/etc.).
+
+Consequence: the hardcoded `scribe-` filter isn't a wart — it's a stand-in for a
+**configurable active-set** the Workbench edits and every quick surface reads.
+"The current everything is too much" → curation is the spine.
+
+## The spine: a personalization profile (active-set) in `policy.toml`
+
+One source of truth the daemon serves and every surface reads:
+
+```toml
+[surface]
+active = ["scribe-summarize", "scribe-explain", …]  # curated working set
+#   surfaces read this; absent → fall back to scribe-* (back-comat)
+
+[patterns.scribe-summarize]
+model = "…"; vendor = "…"          # model/provider selection (config-time)
+favorite = true
+variables = { depth = "medium" }   # default {{vars}}
+# (later) surfaces = ["launcher","panel"], strategy = "...", context = "..."
+```
+
+- New daemon op `{"op":"surface"}` → `{active:[…], patterns:{name:{…}}}`.
+- The three hardcoded `starts_with("scribe-")` sites (settings/workspace/window)
+  all switch to reading `surface.active`. Build curation once; every surface —
+  and future context-menu/widget/selection surfaces — benefits.
+
+## Proposed next slice: **Pattern Library + per-pattern config** (the Workbench's reason to exist)
+
+Merges the user's two leanings (pattern discovery/selection/configuration **and**
+model/provider selection) into one coherent slice, and directly attacks "too much":
+
+1. **Library** — browse/search all 265 patterns by name (descriptions are empty;
+   name search + maybe folder/tag from the pattern dir). Toggle each into the
+   **active set** (★).
+2. **Per-pattern config** — for active patterns: **model + vendor** picker (the 30
+   vendors), default variables. Writes `[patterns.X]` + `[surface].active`.
+3. **Surfaces read the profile** — replace the 3 scribe- literals with the
+   `surface` op. The popup/launcher now show *your* curated set, configured.
+
+Workbench stays small (config + the existing run/inspect console); not Alpaca.
+Per-run model override and the quick OS surfaces (context menu / selection /
+widget) come after, riding the same profile.
+
+**Open question for the slice:** does the active-set live entirely in
+`policy.toml` (simple, one file) or split (curation vs model-policy)? Lean: one
+file, `[surface]` + `[patterns.*]` — the daemon already owns it.
