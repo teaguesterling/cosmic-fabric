@@ -95,18 +95,32 @@ shell-out for multimodal, session/context CRUD, strategy listing, etc., they all
 go in the **Python daemon**; the Rust panel stays a thin socket client. Don't let
 fabric calls leak into the Rust side.
 
-## Product model (settled with the user, 2026-05-27)
+## Product model — three surfaces (settled with the user, 2026-05-27)
 
-**The Workbench is a configuration & personalization surface**, not a chat client.
-Its primary job: curate *how and what* of fabric's huge surface becomes *your*
-working set. The **daily drivers are the quick OS surfaces** — launcher, panel,
-context menus, selections, widgets — plus **handoffs** to more powerful systems
-(Claude, goo). Depth-of-conversation is a **handoff**, not something we rebuild
-(so **sessions drop in priority**; multi-turn lives in Claude/etc.).
+> **goo is out of scope for now** — an aspiration. Near-term handoffs go via
+> clipboard / a staging layer, not a goo route.
+
+One daemon (the one channel) + one **profile** (active-set config) feed three
+distinct UI surfaces:
+
+1. **Workbench — "the loom"** *(seed: `cosmic-fabric-panel window`)*. The power +
+   config surface: full access to fabric's whole surface (all patterns, vendors,
+   contexts, strategies, multimodal), **not** optimized for speed. Its defining
+   job is to **configure the other two** — curate the active-set, set per-pattern
+   model/vendor/variables.
+2. **One-offs — "the kit"** *(launcher + panel, built)*. The COSMIC tie-ins:
+   quick, context-aware access to your common/active features. Flow:
+   **select → inference → review → close.** Future: context-menu, selection
+   actions, widgets. All read the profile the loom configures.
+3. **Session** *(new)*. A lightweight IM-style chat dialog for CoT / multi-step,
+   backed by fabric **sessions** (`sessionName`). Lighter than Alpaca, not the
+   loom. Opened from the loom **or escalated from a one-off** ("turn this result
+   into a conversation") — the kit→session escalation is the connective tissue.
 
 Consequence: the hardcoded `scribe-` filter isn't a wart — it's a stand-in for a
-**configurable active-set** the Workbench edits and every quick surface reads.
-"The current everything is too much" → curation is the spine.
+**configurable active-set** the loom edits and the kit reads. "The current
+everything is too much" → curation is the spine. (Sessions are **not** dropped —
+they're surface 3, just lightweight and separate from the loom.)
 
 ## The spine: a personalization profile (active-set) in `policy.toml`
 
