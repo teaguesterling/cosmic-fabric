@@ -135,9 +135,11 @@ def handle(req):
         model = req.get("model") or dmodel
         vendor = req.get("vendor") or dvendor
         opts = core.extra_to_options(extra)
-        log(f"run pattern={pat} model={model} vendor={vendor} input={len(req.get('input',''))}ch opts={opts}")
+        inp = req.get("input", "")
+        mctx = core.pick_ctx(inp) if (vendor or "").lower() == "ollama" else None
+        log(f"run pattern={pat} model={model} vendor={vendor} input={len(inp)}ch ctx={mctx} opts={opts}")
         try:
-            out = FAB.run(pat, req.get("input", ""), model, vendor, req.get("variables"), opts)
+            out = FAB.run(pat, inp, model, vendor, req.get("variables"), opts, model_ctx=mctx)
         except Exception as e:
             log(f"run error: {e}")
             return {"error": str(e)}
@@ -185,8 +187,10 @@ def stream_run(req, send):
         else:
             send({"chunk": c})
 
+    inp = req.get("input", "")
+    mctx = core.pick_ctx(inp) if (vendor or "").lower() == "ollama" else None
     try:
-        out = FAB.run(pat, req.get("input", ""), model, vendor, req.get("variables"), opts, on_chunk=on_chunk)
+        out = FAB.run(pat, inp, model, vendor, req.get("variables"), opts, on_chunk=on_chunk, model_ctx=mctx)
     except Exception as e:
         log(f"run-stream error: {e}")
         (broadcast if bcast else send)({"event": "error", "error": str(e)} if bcast else {"error": str(e)})

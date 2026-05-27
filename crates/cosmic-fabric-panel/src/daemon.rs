@@ -18,21 +18,28 @@ pub fn sock_path() -> PathBuf {
 }
 
 async fn call(req: serde_json::Value) -> Result<serde_json::Value, String> {
-    let mut stream = UnixStream::connect(sock_path())
-        .await
-        .map_err(|e| format!("daemon not reachable: {e}"))?;
-    let line = serde_json::to_string(&req).map_err(|e| e.to_string())? + "\n";
-    stream
-        .write_all(line.as_bytes())
-        .await
-        .map_err(|e| e.to_string())?;
-    let mut reader = BufReader::new(stream);
-    let mut resp = String::new();
-    reader
-        .read_line(&mut resp)
-        .await
-        .map_err(|e| e.to_string())?;
-    serde_json::from_str(&resp).map_err(|e| format!("bad response: {e}"))
+    // Bound the whole round-trip: a hung/wedged daemon must surface as an error,
+    // not an Task that never resolves. 30s covers the slowest non-stream op
+    // (a URL fetch, ~10s server-side) with margin.
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        let mut stream = UnixStream::connect(sock_path())
+            .await
+            .map_err(|e| format!("daemon not reachable: {e}"))?;
+        let line = serde_json::to_string(&req).map_err(|e| e.to_string())? + "\n";
+        stream
+            .write_all(line.as_bytes())
+            .await
+            .map_err(|e| e.to_string())?;
+        let mut reader = BufReader::new(stream);
+        let mut resp = String::new();
+        reader
+            .read_line(&mut resp)
+            .await
+            .map_err(|e| e.to_string())?;
+        serde_json::from_str::<serde_json::Value>(&resp).map_err(|e| format!("bad response: {e}"))
+    })
+    .await
+    .map_err(|_| "daemon timed out".to_string())?
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

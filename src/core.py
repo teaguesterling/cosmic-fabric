@@ -42,6 +42,18 @@ def resolve_model(pattern, pol):
     return c.get("model"), c.get("vendor"), c.get("extra", []) or []
 
 
+def pick_ctx(input_text, gen_margin=1024, tiers=(2048, 8192, 16384, 32768)):
+    """Right-size the context window for an input: smallest tier that fits
+    `input_tokens (~len/4) + a generation margin`. Keeps short inputs on a small,
+    fully-GPU-resident cache; lets long inputs (scraped pages, files) grow rather
+    than truncate. Returned as `modelContextLength` for the Ollama run."""
+    need = len(input_text) // 4 + gen_margin
+    for t in tiers:
+        if need <= t:
+            return t
+    return tiers[-1]
+
+
 def extra_to_options(extra):
     """Translate the policy's CLI-style `extra` flags into ChatRequest fields,
     so existing policy.toml keeps working over REST."""
@@ -125,9 +137,11 @@ class FabricClient:
             return []
 
     def run(self, pattern, user_input, model, vendor, variables=None, options=None,
-            timeout=600, on_chunk=None):
+            timeout=600, on_chunk=None, model_ctx=None):
         """POST /chat (SSE) → accumulated text. If `on_chunk` is given, it's
-        called with each content fragment as it streams. Raises on error."""
+        called with each content fragment as it streams. `model_ctx` sets the
+        requested context window (`modelContextLength`) — used to right-size the
+        Ollama KV cache for large inputs (web pages, files). Raises on error."""
         body = {
             "prompts": [{
                 "userInput": user_input,
@@ -138,6 +152,8 @@ class FabricClient:
             }],
             "model": model,
         }
+        if model_ctx:
+            body["modelContextLength"] = model_ctx
         body.update(options or {})
         req = urllib.request.Request(self.url + "/chat", data=json.dumps(body).encode(),
                                      headers={"Content-Type": "application/json"})
