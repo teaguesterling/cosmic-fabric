@@ -22,6 +22,7 @@ def load_policy():
         "output": {"mode": "notify"},
         "ollama": {"bin": "/opt/ollama/bin/ollama", "url": "http://localhost:11434", "warn_below_gpu": 99},
         "surface": {"include": [], "exclude": []},
+        "models": {},
     }
     try:
         import tomllib
@@ -32,6 +33,7 @@ def load_policy():
         pol["output"] = {**pol["output"], **(d.get("output", {}) or {})}
         pol["ollama"] = {**pol["ollama"], **(d.get("ollama", {}) or {})}
         pol["surface"] = {**pol["surface"], **(d.get("surface", {}) or {})}
+        pol["models"] = d.get("models", {}) or {}
     except FileNotFoundError:
         pass
     except Exception as e:  # malformed policy must not break the daemon
@@ -56,6 +58,58 @@ def active_patterns(pol, all_names):
 def resolve_model(pattern, pol):
     c = {**pol["default"], **pol["patterns"].get(pattern, {})}
     return c.get("model"), c.get("vendor"), c.get("extra", []) or []
+
+
+_INST_KEYS = ("model", "vendor", "ctx", "thinking", "temperature", "extra", "capabilities")
+
+
+def _inst_of(cfg, models):
+    """An assignment (default/pattern dict) → an instantiation dict, or None.
+    Honors `use` → [models.<name>]; else legacy inline model/vendor."""
+    use = (cfg or {}).get("use")
+    if use and use in models:
+        return dict(models[use])
+    if (cfg or {}).get("model"):  # legacy inline (transition-read)
+        return {k: cfg[k] for k in _INST_KEYS if k in cfg}
+    return None
+
+
+def resolve(pattern, pol):
+    """Resolve a pattern to a model instantiation (flat; explicit selection):
+    the pattern's own instantiation (named `use` or legacy inline) wins, else the
+    default's. Returns a normalized dict (model, vendor, ctx, thinking,
+    temperature, extra, capabilities)."""
+    models = pol.get("models") or {}
+    pat = pol.get("patterns", {}).get(pattern, {}) or {}
+    inst = _inst_of(pat, models) or _inst_of(pol.get("default", {}), models) or {}
+    return {
+        "model": inst.get("model"),
+        "vendor": inst.get("vendor"),
+        "ctx": inst.get("ctx"),
+        "thinking": inst.get("thinking"),
+        "temperature": inst.get("temperature"),
+        "extra": list(inst.get("extra", []) or []),
+        "capabilities": list(inst.get("capabilities", []) or []),
+    }
+
+
+def inst_to_options(inst):
+    """Instantiation params → ChatRequest options. Typed fields (thinking,
+    temperature) plus `extra` passthrough (CLI-style flags)."""
+    opt = extra_to_options(inst.get("extra", []) or [])
+    th = inst.get("thinking")
+    if th is not None:
+        if str(th).lower() in ("off", "none", "false", "0"):
+            opt["thinking"] = "off"
+            opt["suppressThink"] = True   # qwen3 convention: also strip <think>
+        else:
+            opt["thinking"] = str(th)
+    if inst.get("temperature") is not None:
+        try:
+            opt["temperature"] = float(inst["temperature"])
+        except (TypeError, ValueError):
+            pass
+    return opt
 
 
 def pick_ctx(input_text, gen_margin=1024, tiers=(2048, 8192, 16384, 32768)):

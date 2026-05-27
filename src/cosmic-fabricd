@@ -134,12 +134,13 @@ def handle(req):
         if not pat:
             return {"error": "missing pattern"}
         pol = core.load_policy()  # re-read live so policy edits take effect
-        dmodel, dvendor, extra = core.resolve_model(pat, pol)
-        model = req.get("model") or dmodel
-        vendor = req.get("vendor") or dvendor
-        opts = core.extra_to_options(extra)
+        inst = core.resolve(pat, pol)
+        model = req.get("model") or inst["model"]
+        vendor = req.get("vendor") or inst["vendor"]
+        opts = core.inst_to_options(inst)
         inp = req.get("input", "")
-        mctx = core.pick_ctx(inp) if (vendor or "").lower() == "ollama" else None
+        is_ollama = (vendor or "").lower() == "ollama"
+        mctx = inst.get("ctx") or (core.pick_ctx(inp) if is_ollama else None)
         log(f"run pattern={pat} model={model} vendor={vendor} input={len(inp)}ch ctx={mctx} opts={opts}")
         try:
             out = FAB.run(pat, inp, model, vendor, req.get("variables"), opts, model_ctx=mctx)
@@ -174,10 +175,10 @@ def stream_run(req, send):
             send({"dispatched": False, "subscribers": 0})
             return
     pol = core.load_policy()
-    dmodel, dvendor, extra = core.resolve_model(pat, pol)
-    model = req.get("model") or dmodel
-    vendor = req.get("vendor") or dvendor
-    opts = core.extra_to_options(extra)
+    inst = core.resolve(pat, pol)
+    model = req.get("model") or inst["model"]
+    vendor = req.get("vendor") or inst["vendor"]
+    opts = core.inst_to_options(inst)
     warn_below = pol["ollama"].get("warn_below_gpu", 99)
     log(f"run-stream pattern={pat} model={model} vendor={vendor} broadcast={bcast}")
     if bcast:
@@ -191,7 +192,7 @@ def stream_run(req, send):
             send({"chunk": c})
 
     inp = req.get("input", "")
-    mctx = core.pick_ctx(inp) if (vendor or "").lower() == "ollama" else None
+    mctx = inst.get("ctx") or (core.pick_ctx(inp) if (vendor or "").lower() == "ollama" else None)
     try:
         out = FAB.run(pat, inp, model, vendor, req.get("variables"), opts, on_chunk=on_chunk, model_ctx=mctx)
     except Exception as e:

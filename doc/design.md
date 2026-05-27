@@ -195,6 +195,49 @@ patterns, ★-toggles membership, and sets each one's model tier. Daemon `surfac
 op serves it to non-policy-aware clients (the launcher). This is the spine the
 "three surfaces" (loom/kit/session) share.
 
+### Model instantiations + selection (design, 2026-05-27)
+
+Replaces the hardcoded `Tier` enum (fixed model names) and the baked-in
+`pick_ctx` with **user-defined named model configs** — the same de-hardcoding we
+did for patterns. Decisions (with the user): **flat instantiations** (no class
+layer), **explicit-only selection** in v1.
+
+**Instantiation** = a concrete model + deployment params, named in `policy.toml`:
+
+```toml
+[models.local-fast]
+vendor = "Ollama"
+model  = "qwen3:14b-iq4xs"
+ctx    = 2048          # optional; absent → pick_ctx auto-sizes (no regression)
+thinking = "off"       # typed param
+temperature = 0.2      # typed param
+capabilities = ["text"]# reserved — the capability rule reads this later
+extra = []             # passthrough for unrecognized fabric flags
+
+[default] use = "local-fast"
+[patterns.scribe-visualize] use = "sonnet"
+```
+
+- **Selection (v1): explicit.** A run resolves its instantiation from
+  `patterns.<p>.use`, else `default.use`. Future rules (added once this works):
+  **capability** (a vision pattern *must* pick a vision-capable instantiation — the
+  rule that justifies the abstraction) and **size** (ctx ladder by input).
+- **Transition-read migration (no rewrite):** a legacy inline `model`/`vendor`
+  (the current config) is treated as an **anonymous instantiation** — both shapes
+  resolve. We don't rewrite the user's `policy.toml`; instantiations are adopted
+  via the new UI. Default instantiations ship in the example config as data.
+- **Params normalize:** typed fields (`thinking`, `temperature`, `ctx`) as
+  themselves; `extra` only for passthrough. `pick_ctx` is the daemon fallback when
+  `ctx` is unset.
+
+**"Easier to reason about" = the Models view (the loom).** A single place that
+lists your instantiations as cards — name, `model · vendor`, param chips (ctx /
+thinking / temp), capabilities — **and a usage index** ("used by: default,
+scribe-summarize, …") so you see the whole model/param landscape and where each
+is applied, instead of model strings scattered across patterns. Per-pattern
+config (Library) becomes a single **"use instantiation ▾"** dropdown; defining
+the model+params happens once, in the Models view.
+
 ### Daemon ops added this pass
 
 - `{"op":"fetch","url":U,"mode":"scrape"|"readability"}` → `{"text":…,"chars":N}`.
