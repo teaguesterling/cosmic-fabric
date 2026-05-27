@@ -215,17 +215,8 @@ impl cosmic::Application for Window {
                         .map(|p| format!(" \u{00b7} {p:.0}% GPU"))
                         .unwrap_or_default();
                     self.result_meta = Some(format!("{model}{place}"));
-                    // The compositor won't let us auto-open the popup, so alert
-                    // the user the way the launcher does: clipboard + notification.
-                    if let Some(out) = self.result.clone() {
-                        daemon::set_clipboard(&out);
-                        let n = out.len();
-                        let prev: String = out.chars().take(200).collect();
-                        notify(
-                            "Fabric: result ready",
-                            &format!("\u{2713} copied ({n} chars) \u{00b7} open the Fabric panel\n\n{prev}"),
-                        );
-                    }
+                    // The daemon fires the notification + clipboard once (see
+                    // cosmic-fabricd notify_user); the panel just shows the result.
                     app::Task::none()
                 }
                 daemon::BrokerEvent::Error(e) => {
@@ -336,16 +327,6 @@ impl cosmic::Application for Window {
     fn on_close_requested(&self, id: window::Id) -> Option<Message> {
         Some(Message::CloseRequested(id))
     }
-}
-
-fn notify(title: &str, body: &str) {
-    let _ = std::process::Command::new("notify-send")
-        .arg(title)
-        .arg(body)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn();
 }
 
 fn status_task() -> app::Task<Message> {

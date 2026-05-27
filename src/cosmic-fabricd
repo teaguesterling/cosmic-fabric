@@ -18,6 +18,7 @@ import os
 import queue
 import socket
 import socketserver
+import subprocess
 import sys
 import threading
 import time
@@ -44,6 +45,23 @@ def broadcast(event):
             q.put_nowait(event)
         except Exception:
             pass
+
+
+def notify_user(text, pattern):
+    """Clipboard + desktop notification for a completed broadcast run. Lives in
+    the daemon (one process) so the alert fires exactly once, regardless of how
+    many panel clients are subscribed."""
+    try:
+        subprocess.run(["wl-copy"], input=text, text=True, timeout=5)
+    except Exception as e:
+        log(f"wl-copy: {e}")
+    preview = text[:200]
+    body = f"✓ copied ({len(text)} chars) · open the Fabric panel\n\n{preview}"
+    try:
+        subprocess.run(["notify-send", f"Fabric: {pattern}", body], timeout=5,
+                       stdin=subprocess.DEVNULL)
+    except Exception as e:
+        log(f"notify-send: {e}")
 
 
 def log(msg):
@@ -156,7 +174,7 @@ def stream_run(req, send):
             send({"chunk": c})
 
     try:
-        FAB.run(pat, req.get("input", ""), model, vendor, req.get("variables"), opts, on_chunk=on_chunk)
+        out = FAB.run(pat, req.get("input", ""), model, vendor, req.get("variables"), opts, on_chunk=on_chunk)
     except Exception as e:
         log(f"run-stream error: {e}")
         (broadcast if bcast else send)({"event": "error", "error": str(e)} if bcast else {"error": str(e)})
@@ -166,27 +184,44 @@ def stream_run(req, send):
     done = {"model": model, "vendor": vendor, "placement": pct, "warn_below": warn_below}
     if bcast:
         broadcast({"event": "done", **done})
+        notify_user(out, pat)  # one alert, from the daemon (not per-panel)
     else:
         send({"done": True, **done})
 
 
-def run_subscribe(send):
-    """Dedicate this connection to receiving broadcast events (the panel)."""
+def run_subscribe(send, rfile):
+    """Dedicate this connection to receiving broadcast events (the panel).
+    A watcher thread reads the (otherwise-silent) socket to detect disconnect
+    promptly, so stale subscribers don't linger until the next failed send."""
     q = queue.Queue(maxsize=512)
+    stop = object()
     with SUBS_LOCK:
         SUBS.append(q)
     log(f"subscriber added ({len(SUBS)} total)")
+
+    def watch_disconnect():
+        try:
+            while rfile.read(1):  # subscriber sends nothing; read blocks until EOF
+                pass
+        except Exception:
+            pass
+        q.put(stop)
+    threading.Thread(target=watch_disconnect, daemon=True).start()
+
     try:
         send({"subscribed": True})
         while True:
-            send(q.get())  # raises when the peer (panel) disconnects
+            ev = q.get()
+            if ev is stop:
+                break
+            send(ev)
     except Exception:
         pass
     finally:
         with SUBS_LOCK:
             if q in SUBS:
                 SUBS.remove(q)
-        log("subscriber removed")
+        log(f"subscriber removed ({len(SUBS)} left)")
 
 
 class Handler(socketserver.StreamRequestHandler):
@@ -205,7 +240,7 @@ class Handler(socketserver.StreamRequestHandler):
                 send({"error": "bad json"})
                 continue
             if req.get("op") == "subscribe":
-                run_subscribe(send)
+                run_subscribe(send, self.rfile)
                 return  # connection dedicated to pushing broadcasts
             if req.get("op") == "run" and (req.get("stream") or req.get("broadcast")):
                 stream_run(req, send)
