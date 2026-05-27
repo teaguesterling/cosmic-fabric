@@ -69,7 +69,7 @@ fn destinations() -> [DestSpec; 5] {
     [
         DestSpec { dest: Dest::Copy, label: "Copy", enabled: true, note: None },
         DestSpec { dest: Dest::SaveFile, label: "Save to file…", enabled: true, note: None },
-        DestSpec { dest: Dest::Claude, label: "Claude Desktop", enabled: false, note: Some("needs goo route") },
+        DestSpec { dest: Dest::Claude, label: "Claude Desktop", enabled: true, note: Some("via clipboard") },
         DestSpec { dest: Dest::Alpaca, label: "Alpaca", enabled: false, note: Some("needs goo route") },
         DestSpec { dest: Dest::Manage, label: "Manage destinations…", enabled: true, note: None },
     ]
@@ -348,7 +348,15 @@ impl cosmic::Application for Workspace {
                             let _ = std::process::Command::new(exe).arg("settings").spawn();
                         }
                     }
-                    Dest::Claude | Dest::Alpaca => {} // disabled; never fired
+                    Dest::Claude => {
+                        // Stub handoff until goo's route layer carries the payload:
+                        // stage on the clipboard + nudge. (A prompt assembled for an
+                        // agent is the usual case; works for any artifact.)
+                        daemon::set_clipboard(&text);
+                        self.status_msg =
+                            Some(format!("{name} copied — paste into Claude Desktop (Ctrl+V)."));
+                    }
+                    Dest::Alpaca => {} // disabled; never fired
                 }
             }
             Message::Retry => return self.update(Message::Run),
