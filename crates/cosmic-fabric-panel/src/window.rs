@@ -1,5 +1,5 @@
 //! The libcosmic panel applet: an icon → popup with deployment status and a
-//! quick-run pane (pick a `scribe-*` pattern → run it on the clipboard → see the
+//! quick-run pane (pick an active pattern → run it on the clipboard → see the
 //! result). All work goes through `cosmic-fabricd` over the socket.
 
 use cosmic::{
@@ -135,7 +135,7 @@ impl cosmic::Application for Window {
             }
             Message::PatternsDone(Ok(p)) => {
                 // Show the curated active set (re-read per popup open so loom
-                // edits take effect), falling back to scribe-* when uncurated.
+                // edits take effect); include/exclude globs from the profile.
                 self.active = crate::policy::load().active_patterns(&p);
                 self.patterns = p;
                 app::Task::none()

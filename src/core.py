@@ -21,7 +21,7 @@ def load_policy():
         "patterns": {},
         "output": {"mode": "notify"},
         "ollama": {"bin": "/opt/ollama/bin/ollama", "url": "http://localhost:11434", "warn_below_gpu": 99},
-        "surface": {"active": []},
+        "surface": {"include": [], "exclude": []},
     }
     try:
         import tomllib
@@ -40,12 +40,17 @@ def load_policy():
 
 
 def active_patterns(pol, all_names):
-    """The curated working set, intersected with what fabric has; falls back to
-    `scribe-*` when nothing is curated yet. Mirrors the Rust `Policy::active_patterns`."""
-    active = (pol.get("surface") or {}).get("active") or []
-    if not active:
-        return [n for n in all_names if n.startswith("scribe-")]
-    return [a for a in active if a in all_names]
+    """The curated working set: patterns matching an `include` glob (or all, if
+    `include` is empty) and no `exclude` glob. Mirrors the Rust
+    `Policy::active_patterns`. (A custom pack is just an `include` glob in config.)"""
+    import fnmatch
+    surf = pol.get("surface") or {}
+    inc = surf.get("include") or []
+    exc = surf.get("exclude") or []
+    def any_match(globs, n):
+        return any(fnmatch.fnmatch(n, g) for g in globs)
+    return [n for n in all_names
+            if (not inc or any_match(inc, n)) and not any_match(exc, n)]
 
 
 def resolve_model(pattern, pol):

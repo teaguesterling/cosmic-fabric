@@ -93,12 +93,10 @@ def patterns():
     global _pattern_cache
     if _pattern_cache is None:
         resp = daemon_call({"op": "patterns"}, timeout=20)
-        names = (resp or {}).get("patterns", []) if resp else []
-        scribe = sorted(n for n in names if n.startswith("scribe-"))
-        rest = sorted(n for n in names if not n.startswith("scribe-"))
+        names = sorted((resp or {}).get("patterns", []) if resp else [])
         if names:
-            _pattern_cache = scribe + rest  # cache only on success
-        return scribe + rest
+            _pattern_cache = names  # cache only on success
+        return names
     return _pattern_cache
 
 
@@ -106,7 +104,7 @@ _active_cache = None
 
 
 def active_set():
-    """The curated set the daemon reports (falls back to scribe-* server-side)."""
+    """The curated set the daemon reports (include/exclude globs from the profile)."""
     global _active_cache
     if _active_cache is None:
         resp = daemon_call({"op": "surface"}, timeout=10)
@@ -119,7 +117,7 @@ def match(query, names):
     force_all = q.startswith("!")
     if force_all:
         q = q[1:].strip()
-    active = active_set() or [n for n in names if n.startswith("scribe-")]
+    active = active_set() or names  # daemon down → show everything
     if not q:
         return (names if force_all else active)[:CAP]
     if force_all:
@@ -285,9 +283,9 @@ def ipc_loop():
             id_map = {}
             for i, name in enumerate(match(query, patterns())):
                 id_map[i] = name
-                tier = "scribe" if name.startswith("scribe-") else "fabric"
+                tag = "active" if name in active_set() else "all"
                 emit({"Append": {"id": i, "name": name,
-                                 "description": f"Run «{name}» on the selection · {tier}", "icon": ICON}})
+                                 "description": f"Run «{name}» on the selection · {tag}", "icon": ICON}})
             emit("Finished")
             log(f"Search raw={raw!r} → {len(id_map)} results")
         elif "Activate" in req:

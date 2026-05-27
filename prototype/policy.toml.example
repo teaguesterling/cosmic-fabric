@@ -25,6 +25,13 @@ bin = "/opt/ollama/bin/ollama"
 url = "http://localhost:11434"
 warn_below_gpu = 99   # notify if an Ollama run lands below this % on the GPU (spilled to CPU)
 
+[surface]
+# The curated set surfaced in the quick surfaces (panel, launcher) and the
+# Workbench run dropdown. include/exclude are globs over pattern names (`*`/`?`
+# or exact names); empty `include` = all patterns. `scribe-*` is just our pack.
+include = ["scribe-*"]
+exclude = []
+
 [patterns]
 # Most text verbs run local on iq4xs (the default). Overrides:
 scribe-visualize = { model = "claude-sonnet-4-6", vendor = "Anthropic", extra = [] }  # needs tool execution

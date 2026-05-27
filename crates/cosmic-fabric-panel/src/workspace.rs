@@ -148,9 +148,10 @@ pub enum Message {
     DismissError,
 }
 
-/// Pretty verb label for a `scribe-*` pattern name (shared with the popup).
+/// Humanize a pattern name for display (shared with the popup): separators →
+/// spaces, first letter upper. Pack-name-agnostic.
 pub fn pretty(name: &str) -> String {
-    let base = name.strip_prefix("scribe-").unwrap_or(name).replace(['-', '_'], " ");
+    let base = name.replace(['-', '_'], " ");
     let mut c = base.chars();
     match c.next() {
         Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
@@ -382,7 +383,7 @@ impl cosmic::Application for Workspace {
             Message::SetMode(m) => self.mode = m,
             Message::LibraryQuery(q) => self.library_query = q,
             Message::ToggleActive(name) => {
-                self.policy.toggle_active(&name, &self.all_patterns);
+                self.policy.toggle_active(&name);
                 self.persist();
                 self.recompute_active();
             }
