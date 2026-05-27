@@ -169,17 +169,22 @@ everything locally.
    immediate on pattern/source-load — no Assemble button); always-present
    **Response** card streaming via the run broker; Copy prompt / Copy response /
    Copy conversation + Save result to file. Smoke-tested (renders, no panic).
-3. **Send-to registry + Settings** — *not built.* v1 ships **Copy** + **Save**
-   only (buttons, not the dropdown registry). Destination management +
-   model-by-capability categorization land here.
+3. **Send-to registry + Settings** — 🔶 *partly built.* The **send-to dropdown**
+   is built: each artifact (prompt / response / conversation) has a default
+   **Copy** button + a `▾` opening a `popover` menu over the destination registry
+   (Copy · Save to file · Claude/Alpaca *disabled, "needs goo route"* · Manage
+   destinations… → Settings). The registry is a typed data model (`Dest` +
+   `destinations()`) ready to become user-editable. **Still in this slice:**
+   Settings UI to add/remove destinations + model-by-capability categorization.
 4. **Audio** — separate design (voice loop: STT via fabric `--transcribe-file`
    → meta-prompt pattern-pick → fabric → TTS). Much later.
 
-**v1 deferrals (explicit, so the build doesn't read as broken):** send-to is Copy
-buttons not the dropdown registry; file source is path-paste not a native
-picker; Audio/Image origins are disabled; the model-capability badge is absent
-(text/URL only); popup→workspace handoff opens an *empty* workspace (no
-`last_result` carry yet). The mockup (`panel-mockup.html`) shows the full target.
+**v1 deferrals (explicit, so the build doesn't read as broken):** file source is
+path-paste not a native picker; Audio/Image origins are disabled; the
+model-capability badge is absent (text/URL only); Claude/Alpaca destinations are
+shown disabled (need goo's route layer); popup→workspace handoff opens an *empty*
+workspace (no `last_result` carry yet). The mockup (`panel-mockup.html`) shows the
+full target.
 
 ### Daemon ops added this pass
 

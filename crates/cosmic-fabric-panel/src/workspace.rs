@@ -37,6 +37,44 @@ pub enum Origin {
     Url,
 }
 
+/// Which produced artifact a send-to control routes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Artifact {
+    Prompt,
+    Response,
+    Conversation,
+}
+
+/// A send-to destination. The registry is fixed for now (Copy / Save built;
+/// Claude/Alpaca disabled until goo's route layer lands; Manage → Settings); it
+/// will become user-editable in the Settings slice — hence the data model.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Dest {
+    Copy,
+    SaveFile,
+    Claude,
+    Alpaca,
+    Manage,
+}
+
+struct DestSpec {
+    dest: Dest,
+    label: &'static str,
+    enabled: bool,
+    note: Option<&'static str>,
+}
+
+/// The destination registry shown in every send-to menu.
+fn destinations() -> [DestSpec; 5] {
+    [
+        DestSpec { dest: Dest::Copy, label: "Copy", enabled: true, note: None },
+        DestSpec { dest: Dest::SaveFile, label: "Save to file…", enabled: true, note: None },
+        DestSpec { dest: Dest::Claude, label: "Claude Desktop", enabled: false, note: Some("needs goo route") },
+        DestSpec { dest: Dest::Alpaca, label: "Alpaca", enabled: false, note: Some("needs goo route") },
+        DestSpec { dest: Dest::Manage, label: "Manage destinations…", enabled: true, note: None },
+    ]
+}
+
 pub struct Workspace {
     core: cosmic::app::Core,
     status: Option<Status>,
@@ -63,6 +101,7 @@ pub struct Workspace {
 
     error: Option<String>,
     status_msg: Option<String>, // transient (e.g. "saved to …")
+    open_menu: Option<Artifact>, // which send-to menu is open
 }
 
 #[derive(Debug, Clone)]
@@ -83,10 +122,9 @@ pub enum Message {
     TogglePrompt,
     Run,
     RunEvent(daemon::RunEvent),
-    CopyPrompt,
-    CopyResult,
-    CopyConversation,
-    SaveResult,
+    ToggleMenu(Artifact),
+    CloseMenu,
+    Route(Artifact, Dest),
     Retry,
     Clear,
     OpenSettings,
@@ -133,6 +171,7 @@ impl cosmic::Application for Workspace {
             run_seq: 0,
             error: None,
             status_msg: None,
+            open_menu: None,
         };
         (
             me,
@@ -285,28 +324,31 @@ impl cosmic::Application for Workspace {
                 }
             },
 
-            Message::CopyPrompt => {
-                if let Some(p) = &self.prompt {
-                    daemon::set_clipboard(p);
-                    self.status_msg = Some("Prompt copied.".into());
-                }
+            Message::ToggleMenu(a) => {
+                self.open_menu = if self.open_menu == Some(a) { None } else { Some(a) };
             }
-            Message::CopyResult => {
-                if let Some(r) = &self.response {
-                    daemon::set_clipboard(r);
-                    self.status_msg = Some("Response copied.".into());
-                }
-            }
-            Message::CopyConversation => {
-                daemon::set_clipboard(&self.conversation());
-                self.status_msg = Some("Conversation copied.".into());
-            }
-            Message::SaveResult => {
-                if let Some(r) = &self.response {
-                    match save_to_file(r, self.selected_idx.map(|i| self.patterns[i].as_str())) {
-                        Ok(p) => self.status_msg = Some(format!("Saved to {p}")),
-                        Err(e) => self.error = Some(format!("save failed: {e}")),
+            Message::CloseMenu => self.open_menu = None,
+            Message::Route(a, dest) => {
+                self.open_menu = None;
+                let (text, name) = self.artifact_text(a);
+                match dest {
+                    Dest::Copy => {
+                        daemon::set_clipboard(&text);
+                        self.status_msg = Some(format!("{name} copied."));
                     }
+                    Dest::SaveFile => {
+                        let pat = self.selected_idx.map(|i| self.patterns[i].as_str());
+                        match save_to_file(&text, pat) {
+                            Ok(p) => self.status_msg = Some(format!("Saved to {p}")),
+                            Err(e) => self.error = Some(format!("save failed: {e}")),
+                        }
+                    }
+                    Dest::Manage => {
+                        if let Ok(exe) = std::env::current_exe() {
+                            let _ = std::process::Command::new(exe).arg("settings").spawn();
+                        }
+                    }
+                    Dest::Claude | Dest::Alpaca => {} // disabled; never fired
                 }
             }
             Message::Retry => return self.update(Message::Run),
@@ -372,7 +414,7 @@ impl cosmic::Application for Workspace {
         // ---- conversation + footer ----
         col = col.push(divider::horizontal::default());
         let mut foot = cosmic::iced::widget::row![
-            button::text("Copy conversation").on_press(Message::CopyConversation),
+            self.sendto(Artifact::Conversation, "Copy conversation", true),
             button::text("Clear").on_press(Message::Clear),
         ]
         .spacing(s.space_xs)
@@ -519,7 +561,7 @@ impl Workspace {
             card = card.push(
                 cosmic::iced::widget::row![
                     cosmic::widget::Space::new().width(Length::Fill),
-                    copy_btn("Copy prompt", self.prompt.is_some(), Message::CopyPrompt),
+                    self.sendto(Artifact::Prompt, "Copy prompt", self.prompt.is_some()),
                 ]
                 .align_y(Alignment::Center),
             );
@@ -553,8 +595,7 @@ impl Workspace {
         let has = self.response.as_deref().map(|r| !r.is_empty()).unwrap_or(false);
         let actions = cosmic::iced::widget::row![
             cosmic::widget::Space::new().width(Length::Fill),
-            copy_btn("Save…", has, Message::SaveResult),
-            copy_btn("Copy response", has, Message::CopyResult),
+            self.sendto(Artifact::Response, "Copy response", has),
         ]
         .spacing(s.space_xs)
         .align_y(Alignment::Center);
@@ -572,6 +613,66 @@ impl Workspace {
         format!(
             "## Source\n\n{src}\n\n## Prompt\n\n{prompt}\n\n## Response\n\n{resp}\n"
         )
+    }
+
+    fn artifact_text(&self, a: Artifact) -> (String, &'static str) {
+        match a {
+            Artifact::Prompt => (self.prompt.clone().unwrap_or_default(), "Prompt"),
+            Artifact::Response => (self.response.clone().unwrap_or_default(), "Response"),
+            Artifact::Conversation => (self.conversation(), "Conversation"),
+        }
+    }
+
+    /// A send-to control: a default **Copy** button + a `▾` that opens the
+    /// destination registry as a popover menu.
+    fn sendto(&self, a: Artifact, default_label: &str, enabled: bool) -> Element<'_, Message> {
+        let primary = {
+            let b = button::standard(default_label.to_string());
+            if enabled {
+                b.on_press(Message::Route(a, Dest::Copy))
+            } else {
+                b
+            }
+        };
+        let caret = {
+            let b = button::text("\u{25be}");
+            if enabled {
+                b.on_press(Message::ToggleMenu(a))
+            } else {
+                b
+            }
+        };
+        let anchor = cosmic::iced::widget::row![primary, caret]
+            .spacing(2)
+            .align_y(Alignment::Center);
+
+        let mut pop = cosmic::widget::popover(anchor);
+        if self.open_menu == Some(a) {
+            pop = pop
+                .popup(self.dest_menu(a))
+                .on_close(Message::CloseMenu)
+                .position(cosmic::widget::popover::Position::Bottom);
+        }
+        pop.into()
+    }
+
+    fn dest_menu(&self, a: Artifact) -> Element<'_, Message> {
+        let sp = theme::active().cosmic().spacing;
+        let mut menu = Column::new().spacing(2).padding(sp.space_xxs);
+        for d in destinations() {
+            let label = match d.note {
+                Some(n) => format!("{}   ({n})", d.label),
+                None => d.label.to_string(),
+            };
+            let b = button::text(label).width(Length::Fixed(220.0));
+            let b = if d.enabled {
+                b.on_press(Message::Route(a, d.dest))
+            } else {
+                b
+            };
+            menu = menu.push(b);
+        }
+        container(menu).class(theme::Container::Card).into()
     }
 
     fn trigger_assemble(&mut self) -> app::Task<Message> {
@@ -605,15 +706,6 @@ fn origin_btn(label: &str, active: bool, msg: Option<Message>) -> Element<'_, Me
             Some(m) => b.on_press(m).into(),
             None => b.into(),
         }
-    }
-}
-
-fn copy_btn(label: &str, enabled: bool, msg: Message) -> Element<'_, Message> {
-    let b = button::standard(label);
-    if enabled {
-        b.on_press(msg).into()
-    } else {
-        b.into()
     }
 }
 

@@ -108,11 +108,14 @@ then run**:
    automatically (the system prompt + your source, no model run) and re-renders as
    you edit.
 3. **Run** — executes the prompt; the **Response** card streams in.
-4. **Route** — **Copy prompt** / **Copy response** / **Copy conversation**
-   (source + prompt + response), or **Save…** the response to a file.
+4. **Route** — each of the **Prompt**, **Response**, and **Conversation**
+   (source + prompt + response) has a send-to control: click it to **Copy**, or
+   the **▾** to choose a destination — **Save to file…**, or (disabled until
+   goo's route layer lands) **Claude Desktop** / **Alpaca**, plus **Manage
+   destinations…**.
 
-v1 routes via Copy/Save only; the customizable destination registry
-(Claude/Alpaca, etc.) arrives with a later slice (see `doc/design.md`).
+The destination list will become editable in Settings; Claude/Alpaca light up
+once goo's route layer exists (see `doc/design.md`).
 
 ## Configuration
 
