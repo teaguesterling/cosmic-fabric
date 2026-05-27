@@ -90,6 +90,30 @@ The applet (it talks to `cosmic-fabricd`, which the launcher auto-spawns — or 
 
 For models beyond those tiers, edit `policy.toml` directly (below).
 
+## Workspace window
+
+A fuller, prompt-first console — open it from the applet popup (**Open
+workspace…**) or run `cosmic-fabric-panel window`. Unlike the popup's one-click
+clipboard run, the workspace lets you **pick a source, see the assembled prompt,
+then run**:
+
+1. **Source** — choose an origin and edit the text:
+   - **Clipboard** — load the current clipboard (a seed; edit freely after).
+   - **Text** — type/paste directly.
+   - **File** — paste a path (`~/…` ok) → **Load**.
+   - **URL** — paste a link → **Fetch**: the page is scraped to markdown (keyless
+     Jina) and becomes the source. A note shows the transformed length.
+   - *(Audio / Image are shown but disabled — they arrive with vision/model work.)*
+2. **Pattern** — pick a `scribe-*` verb. The **Prompt** card assembles
+   automatically (the system prompt + your source, no model run) and re-renders as
+   you edit.
+3. **Run** — executes the prompt; the **Response** card streams in.
+4. **Route** — **Copy prompt** / **Copy response** / **Copy conversation**
+   (source + prompt + response), or **Save…** the response to a file.
+
+v1 routes via Copy/Save only; the customizable destination registry
+(Claude/Alpaca, etc.) arrives with a later slice (see `doc/design.md`).
+
 ## Configuration
 
 Everything lives in **`~/.config/cosmic-fabric/policy.toml`**. It's re-read on every
