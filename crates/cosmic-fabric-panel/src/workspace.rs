@@ -20,11 +20,16 @@ use cosmic::{
     Element,
 };
 
+use std::collections::BTreeMap;
+
 use crate::daemon::{self, RunResult, Status};
-use crate::policy::{self, Policy};
-use crate::settings::Tier;
+use crate::policy::{self, ModelPick, Policy};
 
 pub const WORKSPACE_APP_ID: &str = "com.github.teaguesterling.CosmicFabric.Workspace";
+
+/// Sentinel in the vendor dropdown meaning "no per-pattern override — use the
+/// global default model."
+const DEFAULT_VENDOR: &str = "Default";
 
 pub fn run() -> cosmic::iced::Result {
     let settings = cosmic::app::Settings::default().size(cosmic::iced::Size::new(640.0, 780.0));
@@ -93,6 +98,8 @@ pub struct Workspace {
     selected_idx: Option<usize>,
     mode: WorkMode,
     library_query: String,
+    catalog: BTreeMap<String, Vec<String>>, // vendor → models, for the picker
+    lib_selected: Option<String>,           // pattern being configured in Library
 
     origin: Origin,
     source: text_editor::Content,
@@ -140,7 +147,10 @@ pub enum Message {
     SetMode(WorkMode),
     LibraryQuery(String),
     ToggleActive(String),
-    SetPatternTier(String, Tier),
+    CatalogDone(Result<BTreeMap<String, Vec<String>>, String>),
+    LibSelect(String),
+    SetPatternVendor(String, String),
+    SetPatternModel(String, String),
     Retry,
     Clear,
     OpenSettings,
@@ -176,6 +186,8 @@ impl cosmic::Application for Workspace {
             selected_idx: None,
             mode: WorkMode::Run,
             library_query: String::new(),
+            catalog: BTreeMap::new(),
+            lib_selected: None,
             origin: Origin::Clipboard,
             source: text_editor::Content::new(),
             url_input: String::new(),
@@ -196,7 +208,12 @@ impl cosmic::Application for Workspace {
         };
         (
             me,
-            cosmic::Task::batch([status_task(), patterns_task(), load_clipboard_task()]),
+            cosmic::Task::batch([
+                status_task(),
+                patterns_task(),
+                catalog_task(),
+                load_clipboard_task(),
+            ]),
         )
     }
 
@@ -387,16 +404,35 @@ impl cosmic::Application for Workspace {
                 self.persist();
                 self.recompute_active();
             }
-            Message::SetPatternTier(name, tier) => {
-                match tier.pick() {
-                    Some(p) => {
-                        self.policy.patterns.insert(name, p);
-                    }
-                    None => {
-                        self.policy.patterns.remove(&name);
-                    }
+            Message::CatalogDone(Ok(c)) => self.catalog = c,
+            Message::CatalogDone(Err(e)) => self.error = Some(e),
+            Message::LibSelect(name) => {
+                self.lib_selected = if self.lib_selected.as_deref() == Some(name.as_str()) {
+                    None
+                } else {
+                    Some(name)
+                };
+            }
+            Message::SetPatternVendor(name, vendor) => {
+                if vendor == DEFAULT_VENDOR {
+                    self.policy.patterns.remove(&name); // use the global default
+                } else {
+                    // switching vendor: default to its first model, keep any extra
+                    let model = self
+                        .catalog
+                        .get(&vendor)
+                        .and_then(|ms| ms.first().cloned())
+                        .unwrap_or_default();
+                    let extra = self.policy.patterns.get(&name).map(|p| p.extra.clone()).unwrap_or_default();
+                    self.policy.patterns.insert(name, ModelPick { model, vendor, extra });
                 }
                 self.persist();
+            }
+            Message::SetPatternModel(name, model) => {
+                if let Some(p) = self.policy.patterns.get_mut(&name) {
+                    p.model = model;
+                    self.persist();
+                }
             }
             Message::Retry => return self.update(Message::Run),
             Message::Clear => {
@@ -541,9 +577,9 @@ impl Workspace {
         }
     }
 
-    /// The Library: curate which of fabric's patterns are in your active set,
-    /// and set each one's model tier. Search reveals the full set; with no query
-    /// it shows your active set.
+    /// The Library: curate which patterns are in your active set (★) and click a
+    /// pattern to configure its model/vendor. Search reveals the full set; with no
+    /// query it shows your active set.
     fn library_view(&self, s: &cosmic::cosmic_theme::Spacing) -> Element<'_, Message> {
         let total = self.all_patterns.len();
         let active_n = self.patterns.len();
@@ -559,35 +595,27 @@ impl Workspace {
                 .collect()
         };
 
-        let tiers = [Tier::Default, Tier::Local, Tier::Haiku, Tier::Sonnet];
-        let tier_labels: Vec<String> = tiers.iter().map(|t| t.short().to_string()).collect();
-
         let mut list = Column::new().spacing(2);
         for name in rows {
             let active = self.policy.is_active(name);
             let star = button::text(if active { "\u{2605}" } else { "\u{2606}" })
                 .on_press(Message::ToggleActive(name.clone()));
-            let mut row = cosmic::iced::widget::row![
+            let model_note = self
+                .policy
+                .patterns
+                .get(name)
+                .map(|p| format!("{} ({})", p.model, p.vendor))
+                .unwrap_or_else(|| "default model".into());
+            let row = cosmic::iced::widget::row![
                 star,
-                text::body(pretty(name)).width(Length::Fixed(230.0)),
+                button::text(pretty(name))
+                    .width(Length::Fixed(230.0))
+                    .on_press(Message::LibSelect(name.clone())),
+                cosmic::widget::Space::new().width(Length::Fill),
+                text::caption(model_note),
             ]
             .spacing(s.space_xs)
             .align_y(Alignment::Center);
-            if active {
-                let cur = self
-                    .policy
-                    .patterns
-                    .get(name)
-                    .map(|p| Tier::of_model(&p.model))
-                    .unwrap_or(Tier::Default);
-                let cur_idx = tiers.iter().position(|t| *t == cur);
-                let nm = name.clone();
-                let ts = tiers;
-                row = row.push(cosmic::widget::Space::new().width(Length::Fill));
-                row = row.push(dropdown(tier_labels.clone(), cur_idx, move |i| {
-                    Message::SetPatternTier(nm.clone(), ts[i])
-                }));
-            }
             list = list.push(row);
         }
 
@@ -597,15 +625,64 @@ impl Workspace {
             format!("matches for \u{201c}{}\u{201d} (\u{2605} = in your set)", self.library_query)
         };
 
-        Column::new()
+        let mut col = Column::new()
             .spacing(s.space_xs)
             .push(
                 text_input("Search all patterns…", &self.library_query)
                     .on_input(Message::LibraryQuery),
             )
             .push(text::caption(hint))
-            .push(scrollable(list).height(Length::Fixed(440.0)))
-            .into()
+            .push(scrollable(list).height(Length::Fixed(330.0)));
+
+        if let Some(name) = &self.lib_selected {
+            col = col.push(self.pattern_config(s, name));
+        }
+        col.into()
+    }
+
+    /// Per-pattern config panel (model + vendor), driven by the live catalog.
+    fn pattern_config(&self, s: &cosmic::cosmic_theme::Spacing, name: &str) -> Element<'_, Message> {
+        let pick = self.policy.patterns.get(name);
+
+        // vendor dropdown: Default (= use global) + every vendor in the catalog.
+        let mut vendors: Vec<String> = vec![DEFAULT_VENDOR.to_string()];
+        vendors.extend(self.catalog.keys().cloned());
+        let cur_vendor = pick.map(|p| p.vendor.clone()).unwrap_or_else(|| DEFAULT_VENDOR.into());
+        let v_idx = vendors.iter().position(|v| *v == cur_vendor);
+        let nm_v = name.to_string();
+        let vendors_for_cb = vendors.clone();
+        let vendor_dd = dropdown(vendors, v_idx, move |i| {
+            Message::SetPatternVendor(nm_v.clone(), vendors_for_cb[i].clone())
+        });
+
+        let mut panel = Column::new()
+            .spacing(s.space_xxs)
+            .push(text::heading(pretty(name)))
+            .push(
+                cosmic::iced::widget::row![text::body("Vendor").width(Length::Fixed(70.0)), vendor_dd]
+                    .spacing(s.space_xs)
+                    .align_y(Alignment::Center),
+            );
+
+        // model dropdown: only when a concrete vendor is chosen.
+        if let Some(models) = self.catalog.get(&cur_vendor) {
+            let cur_model = pick.map(|p| p.model.clone()).unwrap_or_default();
+            let m_idx = models.iter().position(|m| *m == cur_model);
+            let nm_m = name.to_string();
+            let models_for_cb = models.clone();
+            let model_dd = dropdown(models.clone(), m_idx, move |i| {
+                Message::SetPatternModel(nm_m.clone(), models_for_cb[i].clone())
+            });
+            panel = panel.push(
+                cosmic::iced::widget::row![text::body("Model").width(Length::Fixed(70.0)), model_dd]
+                    .spacing(s.space_xs)
+                    .align_y(Alignment::Center),
+            );
+        } else {
+            panel = panel.push(text::caption("Uses the global default model."));
+        }
+
+        container(panel).padding(s.space_xs).class(theme::Container::Card).into()
     }
 
     fn source_section(&self, s: &cosmic::cosmic_theme::Spacing) -> Element<'_, Message> {
@@ -896,6 +973,12 @@ fn status_task() -> app::Task<Message> {
 fn patterns_task() -> app::Task<Message> {
     cosmic::Task::perform(daemon::patterns(), |r| {
         cosmic::Action::App(Message::PatternsDone(r))
+    })
+}
+
+fn catalog_task() -> app::Task<Message> {
+    cosmic::Task::perform(daemon::catalog(), |r| {
+        cosmic::Action::App(Message::CatalogDone(r))
     })
 }
 

@@ -91,6 +91,14 @@ pub async fn run(pattern: String, input: String) -> Result<RunResult, String> {
     serde_json::from_value(v).map_err(|e| e.to_string())
 }
 
+/// Vendor → models catalog (from `/models/names`'s `vendors` map), for the
+/// per-pattern model picker.
+pub async fn catalog() -> Result<std::collections::BTreeMap<String, Vec<String>>, String> {
+    let v = call(serde_json::json!({ "op": "models" })).await?;
+    let vendors = v.get("vendors").cloned().unwrap_or_default();
+    serde_json::from_value(vendors).map_err(|e| e.to_string())
+}
+
 /// Render a pattern's prompt without running it (system + input, `{{vars}}`
 /// substituted). For the workspace's prompt-first view and agent hand-off.
 pub async fn assemble(pattern: String, input: String) -> Result<String, String> {

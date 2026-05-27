@@ -152,6 +152,16 @@ class FabricClient:
             self.log(f"list_models failed: {e}")
             return []
 
+    def model_catalog(self):
+        """{vendor: [models]} from /models/names — for the per-pattern picker."""
+        try:
+            d = self._get("/models/names")
+            v = d.get("vendors", {}) if isinstance(d, dict) else {}
+            return v if isinstance(v, dict) else {}
+        except Exception as e:
+            self.log(f"model_catalog failed: {e}")
+            return {}
+
     def run(self, pattern, user_input, model, vendor, variables=None, options=None,
             timeout=600, on_chunk=None, model_ctx=None):
         """POST /chat (SSE) → accumulated text. If `on_chunk` is given, it's

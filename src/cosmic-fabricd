@@ -94,7 +94,7 @@ def handle(req):
                 _pat_cache = FAB.list_patterns()
         return {"patterns": _pat_cache}
     if op == "models":
-        return {"models": FAB.list_models()}
+        return {"models": FAB.list_models(), "vendors": FAB.model_catalog()}
     if op == "assemble":
         pat = req.get("pattern")
         if not pat:
