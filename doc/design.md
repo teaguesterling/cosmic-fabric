@@ -198,25 +198,43 @@ op serves it to non-policy-aware clients (the launcher). This is the spine the
 ### Model instantiations + selection (design, 2026-05-27)
 
 Replaces the hardcoded `Tier` enum (fixed model names) and the baked-in
-`pick_ctx` with **user-defined named model configs** — the same de-hardcoding we
-did for patterns. Decisions (with the user): **flat instantiations** (no class
-layer), **explicit-only selection** in v1.
+`pick_ctx` with **user-defined model configs** — the same de-hardcoding we did
+for patterns. Decisions (with the user): **two-level (model → variants)** with a
+**default variant**, **categories on both models and variants**, **explicit-only
+selection** in v1. (Flat was rejected as "overly simple / lost clarity": it
+sprawls into near-duplicate rows that repeat the base model and hide the
+"one model, several deployments" structure.)
 
-**Instantiation** = a concrete model + deployment params, named in `policy.toml`:
+**Model** = a base (vendor + model + capabilities), with named **variants**
+(deployment params: ctx/thinking/temperature/extra). The base is defined once;
+variants override/add params and inherit the rest. Both carry free-form
+**categories** for classification/grouping (and the base carries `capabilities`,
+reserved for the capability rule).
 
 ```toml
-[models.local-fast]
+[models.qwen3]
 vendor = "Ollama"
 model  = "qwen3:14b-iq4xs"
-ctx    = 2048          # optional; absent → pick_ctx auto-sizes (no regression)
-thinking = "off"       # typed param
-temperature = 0.2      # typed param
-capabilities = ["text"]# reserved — the capability rule reads this later
-extra = []             # passthrough for unrecognized fabric flags
+capabilities = ["text"]      # reserved (capability rule reads this)
+categories = ["local"]       # free-form classification
+default = "fast"             # which variant `use = "qwen3"` resolves to
+  [models.qwen3.variants.fast]   # deployment instantiations of qwen3
+  ctx = 2048; thinking = "off"; temperature = 0.2
+  categories = ["quick"]
+  [models.qwen3.variants.deep]
+  ctx = 16384
 
-[default] use = "local-fast"
+[models.sonnet]
+vendor = "Anthropic"; model = "claude-sonnet-4-6"; categories = ["cloud"]
+# no variants → the base is the single implicit variant
+
+[default] use = "qwen3/fast"             # model/variant; "qwen3" alone → default variant
 [patterns.scribe-visualize] use = "sonnet"
 ```
+
+**Resolution:** `use = "model/variant"` (or `"model"` → its `default` variant)
+→ effective instantiation = base (vendor/model/capabilities) + variant params;
+categories = base ∪ variant. A model with no variants resolves to its base.
 
 - **Selection (v1): explicit.** A run resolves its instantiation from
   `patterns.<p>.use`, else `default.use`. Future rules (added once this works):

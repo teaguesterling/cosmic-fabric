@@ -61,24 +61,50 @@ def resolve_model(pattern, pol):
 
 
 _INST_KEYS = ("model", "vendor", "ctx", "thinking", "temperature", "extra", "capabilities")
+_VARIANT_PARAMS = ("ctx", "thinking", "temperature", "extra")
+
+
+def _resolve_use(use, models):
+    """`"model"` (→ its default variant) or `"model/variant"` → an effective
+    instantiation: base (vendor/model/capabilities) + the variant's params;
+    categories = base ∪ variant. A model with no variants resolves to its base."""
+    if not use:
+        return None
+    name, _, variant = use.partition("/")
+    m = models.get(name)
+    if not m:
+        return None
+    inst = {k: m[k] for k in ("vendor", "model", "capabilities") if k in m}
+    cats = list(m.get("categories", []) or [])
+    variants = m.get("variants", {}) or {}
+    v = {}
+    if variants:
+        vname = variant or m.get("default") or next(iter(variants))
+        v = variants.get(vname, {}) or {}
+    for k in _VARIANT_PARAMS:
+        if k in v:
+            inst[k] = v[k]
+    inst["categories"] = cats + list(v.get("categories", []) or [])
+    return inst
 
 
 def _inst_of(cfg, models):
     """An assignment (default/pattern dict) → an instantiation dict, or None.
-    Honors `use` → [models.<name>]; else legacy inline model/vendor."""
-    use = (cfg or {}).get("use")
-    if use and use in models:
-        return dict(models[use])
-    if (cfg or {}).get("model"):  # legacy inline (transition-read)
+    Honors `use` → a model[/variant]; else legacy inline model/vendor."""
+    cfg = cfg or {}
+    if cfg.get("use"):
+        r = _resolve_use(cfg["use"], models)
+        if r:
+            return r
+    if cfg.get("model"):  # legacy inline (transition-read)
         return {k: cfg[k] for k in _INST_KEYS if k in cfg}
     return None
 
 
 def resolve(pattern, pol):
-    """Resolve a pattern to a model instantiation (flat; explicit selection):
-    the pattern's own instantiation (named `use` or legacy inline) wins, else the
-    default's. Returns a normalized dict (model, vendor, ctx, thinking,
-    temperature, extra, capabilities)."""
+    """Resolve a pattern to an effective model instantiation (explicit selection):
+    the pattern's own (named `use` or legacy inline) wins, else the default's.
+    Returns a normalized dict."""
     models = pol.get("models") or {}
     pat = pol.get("patterns", {}).get(pattern, {}) or {}
     inst = _inst_of(pat, models) or _inst_of(pol.get("default", {}), models) or {}
@@ -90,6 +116,7 @@ def resolve(pattern, pol):
         "temperature": inst.get("temperature"),
         "extra": list(inst.get("extra", []) or []),
         "capabilities": list(inst.get("capabilities", []) or []),
+        "categories": list(inst.get("categories", []) or []),
     }
 
 
