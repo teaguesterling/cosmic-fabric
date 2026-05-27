@@ -103,3 +103,118 @@ an in-panel check.
 The launcher speaks pop-launcher's line-JSON — the *same surface* a future goo
 meta-plugin would target — with zero goo dependency. They coexist on the launcher;
 neither needs the other.
+
+## Workspace window + polymorphic source/response (designed; mockup: `panel-mockup.html`)
+
+Beyond the popup's fast path, a real **workspace window** (`cosmic-fabric-panel
+window`, same mechanism as Settings) is the "response window" — openable,
+persistent, the home for inspecting and routing. Visual reference:
+`doc/panel-mockup.html` (open in a browser).
+
+**Settled UX decisions:**
+
+- **Triad = source → verb (pattern) → destination.** The same object/verb/
+  indirect-object grammar designed for goo (see `cosmic-goo-integration.md`),
+  made concrete and single-channel. Not the headline; just the shape.
+- **Prompt-first, auto-assembled.** No "Assemble" button: the Prompt card
+  re-renders live as source/pattern/variables change (`assemble` op). **Run** is
+  the only action; the **Response** card is always present (placeholder until Run).
+- **Source is editable and multi-origin**, shared between popup and workspace:
+  segmented origin picker (clipboard · file · text · url · audio · image). Clipboard
+  is a *seed, not a binding* (no auto-resample per run). Popup default = clipboard
+  preloaded, so the fast path stays one-click → notify.
+- **Send-to = a customizable destination registry** (the goo `To:`). Compact
+  copy-icon+dropdown per artifact: one on the Prompt card, one on the Response
+  card, **conversation** promoted to the window header bar (COSMIC standard for
+  whole-doc actions). Ships with Copy (default) + Save-to-file; Claude/Alpaca
+  shown **disabled** until goo's route layer lands (no `claude://` wired early).
+  Registry managed in Settings.
+- **Source includes the run it produced**: each card carries a `⊹ on "…"`
+  source-ref; the conversation control bundles source + prompt + response.
+- Footer: Retry · Stats (undesigned) · Clear · Settings.
+
+**Polymorphic source & response** (fabric supports all of this natively — see
+the fabric-multimodal note; CLI flags, REST exposes a subset):
+
+- **Source pane adapts per origin**, not just multi-origin: url → field + Fetch +
+  scrape/readability toggle; image → thumbnail (no editable text, attaches as
+  vision input); audio → record/upload + duration. Non-text origins (url/audio/
+  youtube) show the **transform** that feeds the prompt (`→ N chars markdown`),
+  so prompt-first stays honest.
+- **Response dispatches on MIME**: text box · image viewer (image-gen) · audio
+  player (TTS). The Response card is not a fixed `<pre>`.
+
+**Model-by-capability (the crux).** Once patterns need different model *types*
+(text/vision/image/audio) across local + several APIs, the preferred-models list
+can't stay flat. Settings → Models gets **capability tabs** (Text/Vision/Image/
+Audio), models grouped by **vendor**, capability **inferred per model** (vendor+
+family) with a manual tag override. A pattern offers only models from the
+category it needs; that same data drives the workspace's **active model badge**
+("⚠ qwen3 can't see images · switch ▾", Run disabled until a capable model is
+picked). Reality check: categories are real but **unevenly populated** on this box
+— Text fully, Vision via a couple of API models + llava, Image mostly API, Audio
+via fabric `--transcribe-file`. Design for that, don't pretend the box does
+everything locally.
+
+### Build slices (independently shippable)
+
+1. **Popup polish** — ✅ *built.* Verb labels (pretty `scribe-*`), "Open
+   workspace…" button in the popup footer (spawns `cosmic-fabric-panel window`).
+   (status pill / result-glance-opens-workspace-with-state deferred — the latter
+   needs a daemon `last_result` op, see below.)
+2. **Workspace window** — ✅ *built (v1).* `cosmic-fabric-panel window`: a
+   `cosmic::app` window (like Settings). Multi-origin **Source** (Clipboard /
+   Text / File-by-path / **URL**; Audio/Image shown disabled), editable via
+   `text_editor`; **auto-assembled** prompt card (debounced 400ms on edit,
+   immediate on pattern/source-load — no Assemble button); always-present
+   **Response** card streaming via the run broker; Copy prompt / Copy response /
+   Copy conversation + Save result to file. Smoke-tested (renders, no panic).
+3. **Send-to registry + Settings** — *not built.* v1 ships **Copy** + **Save**
+   only (buttons, not the dropdown registry). Destination management +
+   model-by-capability categorization land here.
+4. **Audio** — separate design (voice loop: STT via fabric `--transcribe-file`
+   → meta-prompt pattern-pick → fabric → TTS). Much later.
+
+**v1 deferrals (explicit, so the build doesn't read as broken):** send-to is Copy
+buttons not the dropdown registry; file source is path-paste not a native
+picker; Audio/Image origins are disabled; the model-capability badge is absent
+(text/URL only); popup→workspace handoff opens an *empty* workspace (no
+`last_result` carry yet). The mockup (`panel-mockup.html`) shows the full target.
+
+### Daemon ops added this pass
+
+- `{"op":"fetch","url":U,"mode":"scrape"|"readability"}` → `{"text":…,"chars":N}`.
+  `scrape` = keyless Jina (`r.jina.ai/<url>`) markdown; `readability` = direct
+  fetch + naive tag-strip (no Jina). Tight 10s timeout, no retry (the connection
+  is the caller's own thread; the UI re-issues). Socket-tested.
+- Rust clients: `daemon::assemble(pattern,input)` and
+  `daemon::fetch_url(url,mode)` in `crates/.../daemon.rs`.
+
+### LOCKED features
+
+- **URL / web source** — *locked.* Validated **live end-to-end** (2026-05-26,
+  scrape + `scribe-summarize` on `teaguesterling.github.io/judgementalmonad.com`):
+  faithful summary, exit 0. Findings:
+  - **Keyless Jina works.** Both `curl https://r.jina.ai/<url>` and fabric's own
+    `-u/--scrape_url` returned clean markdown with **no `JINA_AI_API_KEY`** set.
+  - **fabric `-u` gotcha (CLI only):** it still **blocks on stdin** even with a
+    scrape URL — must run with stdin closed (`</dev/null`) or it hangs forever.
+    Our planned daemon path sidesteps this entirely (daemon does the Jina/curl
+    fetch itself → markdown → existing `input` of `run`/`assemble`; **no
+    fabric-CLI shell-out, no REST change**).
+  - **VRAM caveat:** a full web page as context **spilled** `qwen3:14b-iq4xs` to
+    **81% GPU** (~19% on CPU). Web/URL sources produce large inputs — exactly the
+    `context-tier sizing` case above; web sources may want a bigger ctx tier or a
+    cloud model. The active-model / tier logic should account for transformed
+    source length, not just the raw subject.
+  - Readability is the alternate toggle. Builds with slice 2 (workspace) — no
+    model-capability dependency, so it's the clean first non-text source.
+
+### Designed but NOT locked (deferred)
+
+- **Image source (vision)** — recommended *second* lock: it's what forces the
+  model-by-capability categorization (and the active badge) to be real. Needs a
+  vision model (llava local, or gpt-4o / claude via API).
+- **Image-gen response** — thin locally; mostly API (gpt-image-1). Demonstrates
+  polymorphic response.
+- **Audio source / voice loop** — slice 4.

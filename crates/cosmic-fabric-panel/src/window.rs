@@ -42,6 +42,7 @@ pub enum Message {
     Broker(daemon::BrokerEvent),
     CopyResult,
     OpenSettings,
+    OpenWorkspace,
 }
 
 impl cosmic::Application for Window {
@@ -240,6 +241,15 @@ impl cosmic::Application for Window {
                 }
                 app::Task::none()
             }
+            Message::OpenWorkspace => {
+                if let Ok(exe) = std::env::current_exe() {
+                    let _ = std::process::Command::new(exe).arg("window").spawn();
+                }
+                if let Some(p) = self.popup.take() {
+                    return destroy_popup(p);
+                }
+                app::Task::none()
+            }
         }
     }
 
@@ -280,7 +290,7 @@ impl cosmic::Application for Window {
         let mut list = Column::new().spacing(2);
         for name in self.patterns.iter().filter(|n| n.starts_with("scribe-")) {
             list = list.push(
-                button::text(name.clone())
+                button::text(crate::workspace::pretty(name))
                     .width(Length::Fill)
                     .on_press(Message::RunPattern(name.clone())),
             );
@@ -312,6 +322,7 @@ impl cosmic::Application for Window {
         col = col.push(padded_control(divider::horizontal::default()));
         col = col.push(padded_control(
             cosmic::iced::widget::row![
+                button::text("Open workspace\u{2026}").on_press(Message::OpenWorkspace),
                 button::text("Refresh").on_press(Message::Refresh),
                 button::text("Settings\u{2026}").on_press(Message::OpenSettings),
             ]

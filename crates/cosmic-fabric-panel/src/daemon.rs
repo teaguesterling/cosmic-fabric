@@ -84,6 +84,35 @@ pub async fn run(pattern: String, input: String) -> Result<RunResult, String> {
     serde_json::from_value(v).map_err(|e| e.to_string())
 }
 
+/// Render a pattern's prompt without running it (system + input, `{{vars}}`
+/// substituted). For the workspace's prompt-first view and agent hand-off.
+pub async fn assemble(pattern: String, input: String) -> Result<String, String> {
+    let v = call(serde_json::json!({ "op": "assemble", "pattern": pattern, "input": input })).await?;
+    if let Some(e) = v.get("error").and_then(|x| x.as_str()) {
+        return Err(e.to_string());
+    }
+    v.get("prompt")
+        .and_then(|x| x.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| "no prompt in response".to_string())
+}
+
+/// Fetch a web page as text via the daemon (`scrape` = Jina markdown, or
+/// `readability`). Returns (text, char_count).
+pub async fn fetch_url(url: String, mode: String) -> Result<(String, usize), String> {
+    let v = call(serde_json::json!({ "op": "fetch", "url": url, "mode": mode })).await?;
+    if let Some(e) = v.get("error").and_then(|x| x.as_str()) {
+        return Err(e.to_string());
+    }
+    let text = v.get("text").and_then(|x| x.as_str()).unwrap_or("").to_string();
+    let chars = v
+        .get("chars")
+        .and_then(|x| x.as_u64())
+        .map(|n| n as usize)
+        .unwrap_or_else(|| text.chars().count());
+    Ok((text, chars))
+}
+
 #[derive(Debug, Clone)]
 pub enum RunEvent {
     Chunk(String),

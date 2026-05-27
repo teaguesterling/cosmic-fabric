@@ -6,6 +6,7 @@ purpose. The launcher does NOT import this — it talks to the daemon over a soc
 """
 import json
 import os
+import re
 import subprocess
 import time
 import urllib.request
@@ -168,6 +169,44 @@ class FabricClient:
         if err:
             raise RuntimeError(err)
         return "".join(out).strip()
+
+
+# ---------- web source ingestion (URL → text) -------------------------------
+_TAG_RE = re.compile(r"<[^>]+>")
+_DROP_RE = re.compile(r"<(script|style|head|noscript)[^>]*>.*?</\1>", re.S | re.I)
+_WS_RE = re.compile(r"\n\s*\n\s*\n+")
+
+
+def _html_to_text(html):
+    """Naive, dependency-free HTML → text for the readability fallback."""
+    html = _DROP_RE.sub("", html)
+    html = re.sub(r"<(br|/p|/div|/h[1-6]|/li)[^>]*>", "\n", html, flags=re.I)
+    text = _TAG_RE.sub("", html)
+    text = (text.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+                .replace("&quot;", '"').replace("&#39;", "'").replace("&nbsp;", " "))
+    return _WS_RE.sub("\n\n", text).strip()
+
+
+def fetch_url(url, mode="scrape", timeout=10):
+    """Fetch a web page as text, for use as fabric `input`.
+
+    - scrape (default): Jina AI reader (https://r.jina.ai/<url>) → clean markdown.
+      Works keyless on this box; same backend fabric's `--scrape_url` uses.
+    - readability: direct fetch + naive tag strip (no-dep fallback, no network
+      dependency on Jina).
+    Kept tight (10s, no retry): the daemon serves this on the caller's own
+    connection thread; the UI re-issues on failure.
+    """
+    if not url or not url.lower().startswith(("http://", "https://")):
+        raise ValueError("url must start with http:// or https://")
+    if mode == "readability":
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 cosmic-fabric"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return _html_to_text(r.read().decode("utf-8", "replace"))
+    req = urllib.request.Request("https://r.jina.ai/" + url,
+                                 headers={"User-Agent": "cosmic-fabric"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read().decode("utf-8", "replace").strip()
 
 
 # ---------- ollama placement / status --------------------------------------

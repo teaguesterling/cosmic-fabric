@@ -107,6 +107,18 @@ def handle(req):
             return {"error": str(e)}
         log(f"assemble pattern={pat} → {len(prompt)} chars")
         return {"prompt": prompt}
+    if op == "fetch":
+        url = req.get("url")
+        if not url:
+            return {"error": "missing url"}
+        mode = req.get("mode", "scrape")
+        try:
+            text = core.fetch_url(url, mode)
+        except Exception as e:
+            log(f"fetch error: {e}")
+            return {"error": str(e)}
+        log(f"fetch {mode} {url} -> {len(text)} chars")
+        return {"text": text, "chars": len(text)}
     if op == "status":
         pol = core.load_policy()
         return {"serve": FAB.alive(),

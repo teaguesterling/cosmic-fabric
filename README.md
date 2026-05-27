@@ -34,7 +34,8 @@ Requires `fabric` (in `~/.local/bin`), `wl-clipboard`, `python3` ≥ 3.11, `noti
 | **1** | `cosmic-fabricd` daemon (REST/SSE, policy, placement) + thin socket-client launcher | ✅ `src/` (current) |
 | **2** | `cosmic-fabric-panel` libcosmic applet — status, quick-run with a **streaming** result pane, GPU-spill badge; + a **settings window** (`cosmic-fabric-panel settings`) editing `policy.toml` | ✅ `crates/` (current) |
 | **2b** | launcher→panel result handoff via daemon pub/sub broker (`[output] mode=panel`) — socket-tested; panel auto-open pending live check | 🔶 built |
-| **3** | cosmic-goo ties in by routing its fabric verbs through `cosmic-fabricd` (one channel); context-tier sizing | ⬜ planned |
+| **2c** | **workspace window** (`cosmic-fabric-panel window`) — prompt-first console: multi-origin Source (clipboard/text/file/**URL**), auto-assembled prompt, streaming response, Copy/Save; popup gains "Open workspace…". Daemon `fetch` op (keyless Jina scrape / readability). | ✅ `crates/` + `src/` (v1; see `doc/design.md` for deferrals) |
+| **3** | cosmic-goo ties in by routing its fabric verbs through `cosmic-fabricd` (one channel); context-tier sizing; send-to destination registry + model-by-capability settings; audio/voice loop | ⬜ planned |
 
 ## License
 
