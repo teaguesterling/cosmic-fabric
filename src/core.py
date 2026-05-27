@@ -21,6 +21,7 @@ def load_policy():
         "patterns": {},
         "output": {"mode": "notify"},
         "ollama": {"bin": "/opt/ollama/bin/ollama", "url": "http://localhost:11434", "warn_below_gpu": 99},
+        "surface": {"active": []},
     }
     try:
         import tomllib
@@ -30,11 +31,21 @@ def load_policy():
         pol["patterns"] = d.get("patterns", {})
         pol["output"] = {**pol["output"], **(d.get("output", {}) or {})}
         pol["ollama"] = {**pol["ollama"], **(d.get("ollama", {}) or {})}
+        pol["surface"] = {**pol["surface"], **(d.get("surface", {}) or {})}
     except FileNotFoundError:
         pass
     except Exception as e:  # malformed policy must not break the daemon
         print(f"[core] policy load error: {e}")
     return pol
+
+
+def active_patterns(pol, all_names):
+    """The curated working set, intersected with what fabric has; falls back to
+    `scribe-*` when nothing is curated yet. Mirrors the Rust `Policy::active_patterns`."""
+    active = (pol.get("surface") or {}).get("active") or []
+    if not active:
+        return [n for n in all_names if n.startswith("scribe-")]
+    return [a for a in active if a in all_names]
 
 
 def resolve_model(pattern, pol):

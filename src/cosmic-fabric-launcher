@@ -102,17 +102,29 @@ def patterns():
     return _pattern_cache
 
 
+_active_cache = None
+
+
+def active_set():
+    """The curated set the daemon reports (falls back to scribe-* server-side)."""
+    global _active_cache
+    if _active_cache is None:
+        resp = daemon_call({"op": "surface"}, timeout=10)
+        _active_cache = (resp or {}).get("active", []) if resp else []
+    return _active_cache
+
+
 def match(query, names):
     q = query.strip().lower()
     force_all = q.startswith("!")
     if force_all:
         q = q[1:].strip()
-    scribe = [n for n in names if n.startswith("scribe-")]
+    active = active_set() or [n for n in names if n.startswith("scribe-")]
     if not q:
-        return (names if force_all else scribe)[:CAP]
+        return (names if force_all else active)[:CAP]
     if force_all:
         return [n for n in names if q in n.lower()][:CAP]
-    hits = [n for n in scribe if q in n.lower()]
+    hits = [n for n in active if q in n.lower()]
     if not hits:
         hits = [n for n in names if q in n.lower()]
     return hits[:CAP]

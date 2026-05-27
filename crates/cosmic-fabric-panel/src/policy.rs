@@ -54,6 +54,15 @@ impl Default for OllamaCfg {
     }
 }
 
+/// The personalization profile's curated set: which patterns are surfaced in the
+/// quick surfaces (kit) and the run dropdown. Empty → fall back to `scribe-*`
+/// (back-compat for configs written before curation existed).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Surface {
+    #[serde(default)]
+    pub active: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Policy {
     #[serde(default)]
@@ -64,6 +73,47 @@ pub struct Policy {
     pub output: OutputCfg,
     #[serde(default)]
     pub ollama: OllamaCfg,
+    #[serde(default)]
+    pub surface: Surface,
+}
+
+impl Policy {
+    /// The curated working set, intersected with what fabric actually has.
+    /// Falls back to `scribe-*` when nothing is curated yet.
+    pub fn active_patterns(&self, all: &[String]) -> Vec<String> {
+        if self.surface.active.is_empty() {
+            all.iter().filter(|p| p.starts_with("scribe-")).cloned().collect()
+        } else {
+            self.surface
+                .active
+                .iter()
+                .filter(|a| all.iter().any(|p| p == *a))
+                .cloned()
+                .collect()
+        }
+    }
+
+    pub fn is_active(&self, name: &str) -> bool {
+        if self.surface.active.is_empty() {
+            name.starts_with("scribe-")
+        } else {
+            self.surface.active.iter().any(|a| a == name)
+        }
+    }
+
+    /// Toggle a pattern's membership in the curated set. The first toggle
+    /// "materializes" the implicit scribe-* default into an explicit list so the
+    /// user's edit sticks.
+    pub fn toggle_active(&mut self, name: &str, all: &[String]) {
+        if self.surface.active.is_empty() {
+            self.surface.active = self.active_patterns(all);
+        }
+        if let Some(i) = self.surface.active.iter().position(|a| a == name) {
+            self.surface.active.remove(i);
+        } else {
+            self.surface.active.push(name.to_string());
+        }
+    }
 }
 
 pub fn load() -> Policy {

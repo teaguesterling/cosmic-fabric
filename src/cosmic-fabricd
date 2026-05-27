@@ -107,6 +107,9 @@ def handle(req):
             return {"error": str(e)}
         log(f"assemble pattern={pat} → {len(prompt)} chars")
         return {"prompt": prompt}
+    if op == "surface":
+        pol = core.load_policy()
+        return {"active": core.active_patterns(pol, FAB.list_patterns())}
     if op == "fetch":
         url = req.get("url")
         if not url:

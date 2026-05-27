@@ -35,7 +35,7 @@ pub enum Tier {
     Sonnet,
 }
 impl Tier {
-    fn short(self) -> &'static str {
+    pub fn short(self) -> &'static str {
         match self {
             Tier::Default => "Default",
             Tier::Local => "Local",
@@ -51,7 +51,7 @@ impl Tier {
             Tier::Sonnet => "Cloud \u{00b7} Sonnet",
         }
     }
-    fn pick(self) -> Option<ModelPick> {
+    pub fn pick(self) -> Option<ModelPick> {
         match self {
             Tier::Default => None,
             Tier::Local => Some(ModelPick::default()),
@@ -67,7 +67,7 @@ impl Tier {
             }),
         }
     }
-    fn of_model(model: &str) -> Tier {
+    pub fn of_model(model: &str) -> Tier {
         if model.contains("haiku") {
             Tier::Haiku
         } else if model.contains("sonnet") {
@@ -231,8 +231,9 @@ impl cosmic::Application for SettingsApp {
 
         // ---- per-pattern model ----
         col = col.push(text::heading("Per-pattern model"));
-        col = col.push(text::caption("Default = use the default model above."));
-        for name in self.patterns.iter().filter(|n| n.starts_with("scribe-")) {
+        col = col.push(text::caption("Your active set (curate it in the Workbench Library)."));
+        let active = self.policy.active_patterns(&self.patterns);
+        for name in active.iter() {
             let sel = self
                 .policy
                 .patterns

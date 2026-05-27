@@ -21,6 +21,8 @@ use cosmic::{
 };
 
 use crate::daemon::{self, RunResult, Status};
+use crate::policy::{self, Policy};
+use crate::settings::Tier;
 
 pub const WORKSPACE_APP_ID: &str = "com.github.teaguesterling.CosmicFabric.Workspace";
 
@@ -75,12 +77,22 @@ fn destinations() -> [DestSpec; 5] {
     ]
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum WorkMode {
+    Run,
+    Library,
+}
+
 pub struct Workspace {
     core: cosmic::app::Core,
     status: Option<Status>,
-    patterns: Vec<String>,      // raw scribe-* names (daemon)
-    pattern_labels: Vec<String>, // pretty labels for the dropdown
+    policy: Policy,
+    all_patterns: Vec<String>,   // every pattern fabric has (unfiltered)
+    patterns: Vec<String>,       // the active/curated set (run dropdown)
+    pattern_labels: Vec<String>, // pretty labels for the active set
     selected_idx: Option<usize>,
+    mode: WorkMode,
+    library_query: String,
 
     origin: Origin,
     source: text_editor::Content,
@@ -125,6 +137,10 @@ pub enum Message {
     ToggleMenu(Artifact),
     CloseMenu,
     Route(Artifact, Dest),
+    SetMode(WorkMode),
+    LibraryQuery(String),
+    ToggleActive(String),
+    SetPatternTier(String, Tier),
     Retry,
     Clear,
     OpenSettings,
@@ -152,9 +168,13 @@ impl cosmic::Application for Workspace {
         let me = Self {
             core,
             status: None,
+            policy: policy::load(),
+            all_patterns: Vec::new(),
             patterns: Vec::new(),
             pattern_labels: Vec::new(),
             selected_idx: None,
+            mode: WorkMode::Run,
+            library_query: String::new(),
             origin: Origin::Clipboard,
             source: text_editor::Content::new(),
             url_input: String::new(),
@@ -203,8 +223,8 @@ impl cosmic::Application for Workspace {
             Message::StatusDone(Ok(s)) => self.status = Some(s),
             Message::StatusDone(Err(e)) => self.error = Some(e),
             Message::PatternsDone(Ok(p)) => {
-                self.patterns = p.into_iter().filter(|n| n.starts_with("scribe-")).collect();
-                self.pattern_labels = self.patterns.iter().map(|n| pretty(n)).collect();
+                self.all_patterns = p;
+                self.recompute_active();
             }
             Message::PatternsDone(Err(e)) => self.error = Some(e),
 
@@ -359,6 +379,24 @@ impl cosmic::Application for Workspace {
                     Dest::Alpaca => {} // disabled; never fired
                 }
             }
+            Message::SetMode(m) => self.mode = m,
+            Message::LibraryQuery(q) => self.library_query = q,
+            Message::ToggleActive(name) => {
+                self.policy.toggle_active(&name, &self.all_patterns);
+                self.persist();
+                self.recompute_active();
+            }
+            Message::SetPatternTier(name, tier) => {
+                match tier.pick() {
+                    Some(p) => {
+                        self.policy.patterns.insert(name, p);
+                    }
+                    None => {
+                        self.policy.patterns.remove(&name);
+                    }
+                }
+                self.persist();
+            }
             Message::Retry => return self.update(Message::Run),
             Message::Clear => {
                 self.source = text_editor::Content::new();
@@ -392,45 +430,63 @@ impl cosmic::Application for Workspace {
         if let Some(st) = &self.status {
             header = header.push(text::caption(self.status_pill(st)));
         }
+        // mode toggle: Run (the console) ⇄ Library (curation)
+        let mode_run = if self.mode == WorkMode::Run {
+            button::suggested("Run")
+        } else {
+            button::text("Run").on_press(Message::SetMode(WorkMode::Run))
+        };
+        let mode_lib = if self.mode == WorkMode::Library {
+            button::suggested("Library")
+        } else {
+            button::text("Library").on_press(Message::SetMode(WorkMode::Library))
+        };
+        header = header.push(
+            cosmic::iced::widget::row![mode_run, mode_lib].spacing(2),
+        );
         col = col.push(header);
         col = col.push(divider::horizontal::default());
 
-        // ---- source ----
-        col = col.push(self.source_section(&s));
+        match self.mode {
+            WorkMode::Library => {
+                col = col.push(self.library_view(&s));
+            }
+            WorkMode::Run => {
+                // ---- source ----
+                col = col.push(self.source_section(&s));
 
-        // ---- pattern + run ----
-        let mut runrow = cosmic::iced::widget::row![dropdown(
-            &self.pattern_labels,
-            self.selected_idx,
-            Message::PickPattern,
-        )]
-        .spacing(s.space_s)
-        .align_y(Alignment::Center);
-        let run_btn = button::suggested(if self.running { "Running…" } else { "Run" });
-        runrow = runrow.push(if self.running {
-            run_btn
-        } else {
-            run_btn.on_press(Message::Run)
-        });
-        col = col.push(runrow);
+                // ---- pattern + run ----
+                let mut runrow = cosmic::iced::widget::row![dropdown(
+                    &self.pattern_labels,
+                    self.selected_idx,
+                    Message::PickPattern,
+                )]
+                .spacing(s.space_s)
+                .align_y(Alignment::Center);
+                let run_btn = button::suggested(if self.running { "Running…" } else { "Run" });
+                runrow = runrow.push(if self.running {
+                    run_btn
+                } else {
+                    run_btn.on_press(Message::Run)
+                });
+                col = col.push(runrow);
 
-        // ---- prompt card ----
-        col = col.push(self.prompt_card(&s));
-        // ---- response card ----
-        col = col.push(self.response_card(&s));
+                col = col.push(self.prompt_card(&s));
+                col = col.push(self.response_card(&s));
 
-        // ---- conversation + footer ----
-        col = col.push(divider::horizontal::default());
-        let mut foot = cosmic::iced::widget::row![
-            self.sendto(Artifact::Conversation, "Copy conversation", true),
-            button::text("Clear").on_press(Message::Clear),
-        ]
-        .spacing(s.space_xs)
-        .align_y(Alignment::Center);
-        foot = foot.push(cosmic::widget::Space::new().width(Length::Fill));
-        foot = foot.push(button::text("Refresh").on_press(Message::Refresh));
-        foot = foot.push(button::text("Settings…").on_press(Message::OpenSettings));
-        col = col.push(foot);
+                col = col.push(divider::horizontal::default());
+                let mut foot = cosmic::iced::widget::row![
+                    self.sendto(Artifact::Conversation, "Copy conversation", true),
+                    button::text("Clear").on_press(Message::Clear),
+                ]
+                .spacing(s.space_xs)
+                .align_y(Alignment::Center);
+                foot = foot.push(cosmic::widget::Space::new().width(Length::Fill));
+                foot = foot.push(button::text("Refresh").on_press(Message::Refresh));
+                foot = foot.push(button::text("Settings…").on_press(Message::OpenSettings));
+                col = col.push(foot);
+            }
+        }
 
         if let Some(msg) = &self.status_msg {
             col = col.push(text::caption(msg.clone()));
@@ -466,6 +522,89 @@ impl Workspace {
             })
             .unwrap_or_default();
         format!("serve {serve}  \u{00b7}  {model}{gpu}")
+    }
+
+    fn recompute_active(&mut self) {
+        self.patterns = self.policy.active_patterns(&self.all_patterns);
+        self.pattern_labels = self.patterns.iter().map(|n| pretty(n)).collect();
+        if let Some(i) = self.selected_idx {
+            if i >= self.patterns.len() {
+                self.selected_idx = None;
+            }
+        }
+    }
+
+    fn persist(&mut self) {
+        if let Err(e) = policy::save(&self.policy) {
+            self.error = Some(format!("save failed: {e}"));
+        }
+    }
+
+    /// The Library: curate which of fabric's patterns are in your active set,
+    /// and set each one's model tier. Search reveals the full set; with no query
+    /// it shows your active set.
+    fn library_view(&self, s: &cosmic::cosmic_theme::Spacing) -> Element<'_, Message> {
+        let total = self.all_patterns.len();
+        let active_n = self.patterns.len();
+        let q = self.library_query.trim().to_lowercase();
+
+        let rows: Vec<&String> = if q.is_empty() {
+            self.patterns.iter().collect()
+        } else {
+            self.all_patterns
+                .iter()
+                .filter(|p| p.to_lowercase().contains(&q))
+                .take(80)
+                .collect()
+        };
+
+        let tiers = [Tier::Default, Tier::Local, Tier::Haiku, Tier::Sonnet];
+        let tier_labels: Vec<String> = tiers.iter().map(|t| t.short().to_string()).collect();
+
+        let mut list = Column::new().spacing(2);
+        for name in rows {
+            let active = self.policy.is_active(name);
+            let star = button::text(if active { "\u{2605}" } else { "\u{2606}" })
+                .on_press(Message::ToggleActive(name.clone()));
+            let mut row = cosmic::iced::widget::row![
+                star,
+                text::body(pretty(name)).width(Length::Fixed(230.0)),
+            ]
+            .spacing(s.space_xs)
+            .align_y(Alignment::Center);
+            if active {
+                let cur = self
+                    .policy
+                    .patterns
+                    .get(name)
+                    .map(|p| Tier::of_model(&p.model))
+                    .unwrap_or(Tier::Default);
+                let cur_idx = tiers.iter().position(|t| *t == cur);
+                let nm = name.clone();
+                let ts = tiers;
+                row = row.push(cosmic::widget::Space::new().width(Length::Fill));
+                row = row.push(dropdown(tier_labels.clone(), cur_idx, move |i| {
+                    Message::SetPatternTier(nm.clone(), ts[i])
+                }));
+            }
+            list = list.push(row);
+        }
+
+        let hint = if q.is_empty() {
+            format!("{active_n} active \u{00b7} {total} total \u{00b7} search to add more")
+        } else {
+            format!("matches for \u{201c}{}\u{201d} (\u{2605} = in your set)", self.library_query)
+        };
+
+        Column::new()
+            .spacing(s.space_xs)
+            .push(
+                text_input("Search all patterns…", &self.library_query)
+                    .on_input(Message::LibraryQuery),
+            )
+            .push(text::caption(hint))
+            .push(scrollable(list).height(Length::Fixed(440.0)))
+            .into()
     }
 
     fn source_section(&self, s: &cosmic::cosmic_theme::Spacing) -> Element<'_, Message> {

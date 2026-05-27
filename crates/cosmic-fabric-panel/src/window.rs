@@ -22,6 +22,7 @@ pub struct Window {
     popup: Option<window::Id>,
     status: Option<Status>,
     patterns: Vec<String>,
+    active: Vec<String>, // curated set from the profile (what the popup shows)
     result: Option<String>,
     result_meta: Option<String>,
     running: bool,
@@ -58,6 +59,7 @@ impl cosmic::Application for Window {
                 popup: None,
                 status: None,
                 patterns: Vec::new(),
+                active: Vec::new(),
                 result: None,
                 result_meta: None,
                 running: false,
@@ -132,6 +134,9 @@ impl cosmic::Application for Window {
                 app::Task::none()
             }
             Message::PatternsDone(Ok(p)) => {
+                // Show the curated active set (re-read per popup open so loom
+                // edits take effect), falling back to scribe-* when uncurated.
+                self.active = crate::policy::load().active_patterns(&p);
                 self.patterns = p;
                 app::Task::none()
             }
@@ -288,7 +293,7 @@ impl cosmic::Application for Window {
         // ---- quick run ----
         col = col.push(padded_control(text::heading("Run on clipboard")));
         let mut list = Column::new().spacing(2);
-        for name in self.patterns.iter().filter(|n| n.starts_with("scribe-")) {
+        for name in self.active.iter() {
             list = list.push(
                 button::text(crate::workspace::pretty(name))
                     .width(Length::Fill)
