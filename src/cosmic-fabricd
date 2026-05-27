@@ -16,6 +16,7 @@ newlines, so bodies stay single-line). Ops:
 import json
 import os
 import queue
+import socket
 import socketserver
 import sys
 import threading
@@ -219,9 +220,23 @@ class Server(socketserver.ThreadingUnixStreamServer):
 
 def main():
     global FAB
+    path = sock_path()
+    # Don't steal the socket from a live daemon — that orphans it (and its
+    # subscribers). If one already answers, exit; only take over a stale socket.
+    if os.path.exists(path):
+        try:
+            t = socket.socket(socket.AF_UNIX)
+            t.settimeout(1)
+            t.connect(path)
+            t.sendall(b'{"op":"ping"}\n')
+            t.recv(64)
+            t.close()
+            log("another cosmic-fabricd is already listening; exiting")
+            return
+        except OSError:
+            pass  # stale socket, no live daemon → safe to take over
     FAB = core.FabricClient(log=log)
     FAB.ensure_serve()
-    path = sock_path()
     try:
         os.unlink(path)
     except FileNotFoundError:
