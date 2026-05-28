@@ -269,6 +269,20 @@ pub fn subscribe() -> impl cosmic::iced::futures::Stream<Item = BrokerEvent> {
     })
 }
 
+/// The primary selection (highlighted text), falling back to the clipboard —
+/// the quick-action's input source.
+pub fn selection() -> String {
+    for args in [&["-p", "-n"][..], &["-n"][..]] {
+        if let Ok(o) = std::process::Command::new("wl-paste").args(args).output() {
+            let s = String::from_utf8_lossy(&o.stdout).to_string();
+            if !s.trim().is_empty() {
+                return s;
+            }
+        }
+    }
+    String::new()
+}
+
 /// Current clipboard text (the panel's quick-run input source).
 pub fn clipboard() -> String {
     std::process::Command::new("wl-paste")
