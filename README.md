@@ -7,6 +7,7 @@ settings window, and a daemon that ties them together.
 
 > **Vision & feature map:** [`doc/fabric-on-the-desktop.md`](doc/fabric-on-the-desktop.md)
 > — every fabric capability, its desktop usefulness, how we envision it, and status.
+> Interactive version (filter by status, live checklist): [`doc/fabric-on-the-desktop.html`](doc/fabric-on-the-desktop.html).
 
 **Standalone from [cosmic-goo](https://github.com/…/cosmic-goo).** cosmic-fabric and
 goo are siblings: both speak to fabric, neither depends on the other. The launcher

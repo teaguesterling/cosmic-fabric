@@ -6,206 +6,324 @@
 <title>Fabric on the COSMIC desktop — feature map</title>
 <style>
   :root{
-    --bg:#1b1b1f; --surface:#242429; --card:#2c2c33; --line:#3a3a42;
-    --text:#e8e8ec; --dim:#a6a6b0; --faint:#74747e; --accent:#6aa9c9;
-    --done:#67c187; --partial:#e7b860; --planned:#7f7f8a; --proto:#c98fd6;
+    --bg:#1c1c1f;--surface:#26262a;--card:#2f2f34;--card2:#37373d;--line:#45454c;
+    --text:#e7e7ea;--dim:#a4a4ad;--faint:#74747e;--accent:#6aa9c9;--accent-dim:#2f4d5c;
+    --good:#67c187;--warn:#e7b860;--plan:#8d8d97;--radius:12px;--rsm:8px;
     font-family:"Fira Sans","Inter",system-ui,sans-serif;
   }
-  *{box-sizing:border-box}
-  body{margin:0;background:var(--bg);color:var(--text);line-height:1.5;-webkit-font-smoothing:antialiased}
-  .wrap{max-width:1000px;margin:0 auto;padding:32px 20px 80px}
-  h1{font-size:26px;margin:0 0 4px}
-  .sub{color:var(--dim);margin:0 0 20px}
-  h2{font-size:18px;margin:34px 0 10px;padding-bottom:6px;border-bottom:1px solid var(--line)}
-  h3{font-size:14px;color:var(--accent);margin:20px 0 8px;letter-spacing:.02em}
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--text);line-height:1.5;-webkit-font-smoothing:antialiased;padding-bottom:80px}
   a{color:var(--accent)}
-  code{background:var(--card);padding:1px 5px;border-radius:4px;font-size:.88em}
-  .shape{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:14px 18px;margin:14px 0}
-  .shape b{color:var(--text)} .shape .s{color:var(--dim);font-size:13.5px}
-  /* status pills */
-  .badge{display:inline-block;border-radius:999px;padding:1px 9px;font-size:11px;font-weight:600;white-space:nowrap}
-  .b-done{background:rgba(103,193,135,.16);color:var(--done);border:1px solid var(--done)}
-  .b-partial{background:rgba(231,184,96,.14);color:var(--partial);border:1px solid var(--partial)}
-  .b-planned{background:rgba(127,127,138,.14);color:var(--planned);border:1px solid var(--planned)}
-  .b-proto{background:rgba(201,143,214,.14);color:var(--proto);border:1px solid var(--proto)}
-  /* filter bar */
-  .filters{position:sticky;top:0;background:linear-gradient(var(--bg),var(--bg) 70%,transparent);
-    padding:12px 0;margin:0 0 8px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;z-index:5}
-  .filters .lbl{color:var(--faint);font-size:12px;margin-right:2px}
-  .chip{cursor:pointer;border:1px solid var(--line);background:var(--card);color:var(--dim);
-    border-radius:999px;padding:4px 12px;font-size:12.5px;user-select:none}
-  .chip.on{color:var(--text);border-color:var(--accent);background:rgba(106,169,201,.12)}
-  /* feature groups */
-  .group{background:var(--surface);border:1px solid var(--line);border-radius:12px;margin:12px 0;overflow:hidden}
-  .group>summary{cursor:pointer;padding:12px 16px;font-weight:600;font-size:15px;list-style:none;
-    display:flex;align-items:center;gap:10px}
-  .group>summary::-webkit-details-marker{display:none}
-  .group>summary .caret{color:var(--faint);transition:transform .15s}
-  .group[open]>summary .caret{transform:rotate(90deg)}
-  .group>summary .count{margin-left:auto;font-size:11px;color:var(--faint);font-weight:400}
-  .rows{padding:0 8px 8px}
-  .row{display:grid;grid-template-columns:1fr 1fr 64px;gap:10px;padding:10px 8px;border-top:1px solid var(--line)}
-  .row .f{font-size:13.5px} .row .f b{color:var(--text)}
-  .row .why{font-size:12.5px;color:var(--dim)}
-  .row .st{text-align:right}
-  .row .env{display:block;font-size:11.5px;color:var(--faint);margin-top:3px}
-  .hidden{display:none}
-  .legend{color:var(--faint);font-size:12px;margin-top:6px}
-  ul{margin:6px 0 6px 0;padding-left:20px} li{margin:3px 0;font-size:13.5px;color:var(--dim)}
-  .check{list-style:none;padding-left:0} .check li{margin:5px 0}
-  .check input{margin-right:8px;vertical-align:middle}
-  .note{color:var(--faint);font-size:12.5px}
-  table.mini{width:100%;border-collapse:collapse;margin:6px 0;font-size:13px}
-  table.mini td{border-top:1px solid var(--line);padding:6px 8px;vertical-align:top}
-  table.mini td:first-child{color:var(--text);white-space:nowrap}
+  .wrap{max-width:920px;margin:0 auto;padding:28px 20px}
+  h1{font-size:26px;font-weight:700;margin-bottom:6px}
+  h2{font-size:18px;font-weight:600;margin:28px 0 10px;display:flex;align-items:center;gap:8px}
+  .sub{color:var(--dim);font-size:14px;margin-bottom:6px}
+  .shape{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:14px 16px;margin:14px 0;font-size:13.5px;color:var(--dim)}
+  .shape b{color:var(--text)}
+  .shape pre{font-family:"Fira Mono",ui-monospace,monospace;font-size:12px;color:var(--faint);margin:8px 0;white-space:pre;overflow-x:auto}
+
+  /* sticky filter bar */
+  .bar{position:sticky;top:0;z-index:10;background:rgba(28,28,31,.92);backdrop-filter:blur(8px);
+    border-bottom:1px solid var(--line);padding:10px 0;margin:0 0 6px}
+  .bar .inner{max-width:920px;margin:0 auto;padding:0 20px;display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+  .flt{font-size:12.5px;border:1px solid var(--line);background:var(--card);color:var(--dim);
+    border-radius:999px;padding:5px 12px;cursor:pointer;display:inline-flex;gap:6px;align-items:center;user-select:none}
+  .flt:hover{background:var(--card2)}
+  .flt.on{background:var(--accent-dim);border-color:var(--accent);color:var(--text)}
+  .flt .n{font-variant-numeric:tabular-nums;color:var(--faint);font-size:11px}
+  .dot{width:8px;height:8px;border-radius:50%}
+  .dot.built{background:var(--good)}.dot.partial{background:var(--warn)}.dot.planned{background:var(--plan)}
+  .bar .note{margin-left:auto;color:var(--faint);font-size:11.5px}
+
+  /* group */
+  .group{border:1px solid var(--line);border-radius:var(--radius);margin:12px 0;overflow:hidden;background:var(--surface)}
+  .ghead{display:flex;align-items:center;gap:10px;padding:12px 16px;cursor:pointer;user-select:none}
+  .ghead:hover{background:var(--card)}
+  .ghead .tw{font-weight:600;font-size:15px}
+  .ghead .gnum{color:var(--faint);font-size:12px;font-weight:400}
+  .ghead .caret{margin-left:auto;color:var(--faint);transition:transform .15s}
+  .group.collapsed .caret{transform:rotate(-90deg)}
+  .group.collapsed .gbody{display:none}
+  .gbody{padding:4px 8px 10px}
+  .row{display:grid;grid-template-columns:170px 1fr 1fr;gap:12px;padding:10px 12px;border-top:1px solid var(--line);align-items:start;font-size:13px}
+  .row:first-child{border-top:none}
+  .row .feat{font-weight:600}
+  .row .feat .st{display:inline-flex;align-items:center;gap:5px;font-size:10.5px;color:var(--dim);font-weight:500;margin-top:4px;
+    border:1px solid var(--line);border-radius:5px;padding:1px 6px;white-space:nowrap}
+  .row .lbl{color:var(--faint);font-size:10px;text-transform:uppercase;letter-spacing:.06em;display:block;margin-bottom:2px}
+  .row .use{color:var(--dim)}
+  .row .env{color:var(--text)}
+  .row code{background:var(--card2);padding:1px 5px;border-radius:4px;font-size:11.5px}
+  @media(max-width:680px){.row{grid-template-columns:1fr}}
+  .gnote{font-size:12px;color:var(--faint);padding:8px 12px 2px}
+
+  table.mini{width:100%;border-collapse:collapse;font-size:13px;margin:6px 0}
+  table.mini td,table.mini th{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  table.mini th{background:var(--card);font-weight:600;font-size:12px}
+  table.mini code{background:var(--card2);padding:1px 5px;border-radius:4px;font-size:11.5px}
+
+  .surf{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin:10px 0}
+  @media(max-width:680px){.surf{grid-template-columns:1fr}}
+  .surf .s{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:12px 14px}
+  .surf .s h3{font-size:14px;margin-bottom:4px}
+  .surf .s p{font-size:12.5px;color:var(--dim)}
+
+  ul.road{list-style:none;counter-reset:r}
+  ul.road li{counter-increment:r;position:relative;padding:8px 8px 8px 38px;border-bottom:1px solid var(--line);font-size:13px;color:var(--dim)}
+  ul.road li::before{content:counter(r);position:absolute;left:8px;top:8px;width:22px;height:22px;border-radius:50%;
+    background:var(--card2);color:var(--accent);display:grid;place-items:center;font-size:12px;font-weight:600}
+  ul.road li b{color:var(--text)}
+
+  .chk{list-style:none}
+  .chk li{display:flex;gap:9px;align-items:flex-start;padding:6px 0;font-size:13px;color:var(--dim)}
+  .chk input{margin-top:3px;accent-color:var(--accent);width:15px;height:15px;flex:none}
+  .chk .sec{font-weight:600;color:var(--text);margin:12px 0 2px;font-size:13px}
+  .chk li.done label{text-decoration:line-through;color:var(--faint)}
+  .chk code{background:var(--card2);padding:1px 5px;border-radius:4px;font-size:11.5px}
+
+  .goo{border:1px dashed var(--accent-dim);border-radius:var(--radius);padding:4px 16px 16px;margin-top:24px;background:#21262b}
+  .goo .tag{display:inline-block;background:var(--accent-dim);color:var(--accent);font-size:11px;
+    border-radius:0 0 8px 8px;padding:3px 10px;margin-bottom:8px;font-weight:600}
+  .goo h2{font-size:16px}
+  .goo p{font-size:13px;color:var(--dim);margin:8px 0}
+  .foot{color:var(--faint);font-size:11.5px;margin-top:24px;text-align:center}
 </style>
 </head>
-<body><div class="wrap">
+<body>
 
-<h1>Fabric on the COSMIC desktop</h1>
-<p class="sub">Feature map &amp; vision — every fabric capability, its desktop usefulness, how we envision it, and what's in place. <span class="note">(Interactive view of <code>fabric-on-the-desktop.md</code>.)</span></p>
+<div class="bar"><div class="inner">
+  <span style="font-weight:600;font-size:13px">Filter:</span>
+  <span class="flt on" data-f="all">All <span class="n" id="n-all"></span></span>
+  <span class="flt" data-f="built"><span class="dot built"></span>Built <span class="n" id="n-built"></span></span>
+  <span class="flt" data-f="partial"><span class="dot partial"></span>Partial <span class="n" id="n-partial"></span></span>
+  <span class="flt" data-f="planned"><span class="dot planned"></span>Planned <span class="n" id="n-planned"></span></span>
+  <span class="note">click a group header to collapse</span>
+</div></div>
 
-<div class="shape">
-  <b>One daemon, one profile, three surfaces.</b>
-  <div class="s"><code>cosmic-fabricd</code> owns the fabric deployment (the “one channel”); everything else is a thin socket client reading one profile (<code>policy.toml</code>).</div>
-  <div class="s" style="margin-top:8px">
-    🧵 <b>Loom</b> — the Workbench: Run/inspect, <b>Library</b> (curate patterns), <b>Models</b> (instantiations). Configures the rest.<br>
-    🧰 <b>Kit</b> — quick OS tie-ins: launcher, panel popup, hotkey quick-action. select → inference → review → close.<br>
-    💬 <b>Session</b> — lightweight multi-turn chat.<br>
-    <span class="note">+ the socket itself is a 4th, programmatic surface (see the goo appendix in the .md).</span>
+<div class="wrap">
+  <h1>Fabric on the COSMIC desktop</h1>
+  <p class="sub">Feature map &amp; vision — every fabric capability, its desktop usefulness, how we envision it, and status. Interactive companion to <code>fabric-on-the-desktop.md</code>.</p>
+
+  <div class="shape">
+    <b>The shape.</b> One daemon (<code>cosmic-fabricd</code>) owns the fabric deployment — the <b>one channel</b>; everything else is a thin socket client. One <b>profile</b> (<code>policy.toml</code>) every surface reads. Three UI surfaces — plus the socket they sit on, a programmatic 4th surface (see the goo appendix).
+    <pre>  you ─▶ surfaces (loom · kit · session)
+            │ unix socket (line-JSON)  ◀── the 4th, programmatic surface
+            ▼
+      cosmic-fabricd ─REST▶ fabric --serve ─▶ Ollama / Anthropic / …</pre>
   </div>
+
+  <h2>Feature catalog</h2>
+
+  <!-- 1 -->
+  <div class="group"><div class="ghead"><span class="tw">1 · Patterns</span><span class="gnum">the verbs</span><span class="caret">▾</span></div>
+    <div class="gbody">
+      <div class="row" data-status="built"><div class="feat">patterns (265)<span class="st"><span class="dot built"></span>built</span></div>
+        <div class="use"><span class="lbl">desktop use</span>summarize / explain / critique / extract on whatever you're looking at</div>
+        <div class="env"><span class="lbl">envisioned · status</span>run from any surface; <b>curate</b> a working set (rest stay searchable). Run everywhere.</div></div>
+      <div class="row" data-status="partial"><div class="feat">variables <code>{{lang}}</code><span class="st"><span class="dot partial"></span>partial</span></div>
+        <div class="use"><span class="lbl">desktop use</span>adverbs — "summarize <b>deeply</b>", "translate to <b>fr</b>"</div>
+        <div class="env"><span class="lbl">envisioned · status</span>per-pattern default vars + per-run override. Daemon passes them; editing UI planned.</div></div>
+      <div class="row" data-status="planned"><div class="feat"><code>--input-has-vars</code><span class="st"><span class="dot planned"></span>planned</span></div>
+        <div class="use"><span class="lbl">desktop use</span>templated inputs</div>
+        <div class="env"><span class="lbl">envisioned · status</span>niche; expose only if needed.</div></div>
+      <div class="gnote">Curation = include/exclude <b>globs</b> over names (<code>scribe-*</code> is just our pack; the code is pack-agnostic).</div>
+    </div></div>
+
+  <!-- 2 -->
+  <div class="group"><div class="ghead"><span class="tw">2 · Models &amp; vendors</span><span class="gnum">where / how it runs</span><span class="caret">▾</span></div>
+    <div class="gbody">
+      <div class="row" data-status="built"><div class="feat">~30 vendors<span class="st"><span class="dot built"></span>built</span></div>
+        <div class="use"><span class="lbl">desktop use</span>local for cheap/private, cloud for hard tasks</div>
+        <div class="env"><span class="lbl">envisioned · status</span>only configured vendors surface (what you can actually run). Catalog from <code>/models/names</code>.</div></div>
+      <div class="row" data-status="built"><div class="feat">per-pattern model<span class="st"><span class="dot built"></span>built</span></div>
+        <div class="use"><span class="lbl">desktop use</span>right tool per verb (local summarize, cloud visualize)</div>
+        <div class="env"><span class="lbl">envisioned · status</span>assign each pattern a named instantiation. Models editor.</div></div>
+      <div class="row" data-status="built"><div class="feat">deployment params<span class="st"><span class="dot built"></span>built</span></div>
+        <div class="use"><span class="lbl">desktop use</span>right-size KV cache; toggle reasoning; tune creativity</div>
+        <div class="env"><span class="lbl">envisioned · status</span>model → variants (<code>qwen3/fast</code>@2048, <code>qwen3/deep</code>@16384) + default variant. Two-level editor.</div></div>
+      <div class="row" data-status="built"><div class="feat"><code>modelContextLength</code><span class="st"><span class="dot built"></span>built</span></div>
+        <div class="use"><span class="lbl">desktop use</span>stop short inputs over-allocating; let long inputs grow</div>
+        <div class="env"><span class="lbl">envisioned · status</span>auto-size by input (<code>pick_ctx</code>) when a variant has no explicit ctx.</div></div>
+      <div class="row" data-status="built"><div class="feat">capabilities + rule<span class="st"><span class="dot built"></span>built</span></div>
+        <div class="use"><span class="lbl">desktop use</span>a vision pattern <i>can't</i> run on a text-only model — a hard constraint</div>
+        <div class="env"><span class="lbl">envisioned · status</span><b>capability rule built</b> — daemon auto-swaps to a vision instantiation for image runs (prefers local); socket-validated.</div></div>
+      <div class="row" data-status="planned"><div class="feat">ChatOptions <code>search</code><span class="st"><span class="dot planned"></span>planned</span></div>
+        <div class="use"><span class="lbl">desktop use</span>"answer using the web" without scraping</div>
+        <div class="env"><span class="lbl">envisioned · status</span>a per-run / instantiation toggle.</div></div>
+    </div></div>
+
+  <!-- 3 -->
+  <div class="group"><div class="ghead"><span class="tw">3 · Inputs / sources</span><span class="gnum">what you act on</span><span class="caret">▾</span></div>
+    <div class="gbody">
+      <div class="row" data-status="built"><div class="feat">text / clipboard<span class="st"><span class="dot built"></span>built</span></div>
+        <div class="use"><span class="lbl">desktop use</span>the everyday case</div>
+        <div class="env"><span class="lbl">envisioned · status</span>clipboard is the kit's default; editable in the loom.</div></div>
+      <div class="row" data-status="built"><div class="feat">primary selection<span class="st"><span class="dot built"></span>built</span></div>
+        <div class="use"><span class="lbl">desktop use</span>act on highlighted text, zero copy-paste</div>
+        <div class="env"><span class="lbl">envisioned · status</span>the quick-action hotkey + the launcher.</div></div>
+      <div class="row" data-status="partial"><div class="feat">file<span class="st"><span class="dot partial"></span>partial</span></div>
+        <div class="use"><span class="lbl">desktop use</span>run a pattern over a document</div>
+        <div class="env"><span class="lbl">envisioned · status</span>path field now; native picker later.</div></div>
+      <div class="row" data-status="built"><div class="feat">URL / web<span class="st"><span class="dot built"></span>built</span></div>
+        <div class="use"><span class="lbl">desktop use</span>"summarize this page" from a link</div>
+        <div class="env"><span class="lbl">envisioned · status</span>daemon fetches → markdown (keyless Jina / readability) → feeds the prompt.</div></div>
+      <div class="row" data-status="planned"><div class="feat">YouTube<span class="st"><span class="dot planned"></span>planned</span></div>
+        <div class="use"><span class="lbl">desktop use</span>"summarize this talk"</div>
+        <div class="env"><span class="lbl">envisioned · status</span>a URL-source variant (transcript → prompt).</div></div>
+      <div class="row" data-status="planned"><div class="feat">audio / STT<span class="st"><span class="dot planned"></span>needs OpenAI key</span></div>
+        <div class="use"><span class="lbl">desktop use</span>voice notes; "what did this meeting cover"</div>
+        <div class="env"><span class="lbl">envisioned · status</span>source → transcribe → prompt. fabric STT is OpenAI-only — needs a key.</div></div>
+      <div class="row" data-status="partial"><div class="feat">image (vision)<span class="st"><span class="dot partial"></span>backend built</span></div>
+        <div class="use"><span class="lbl">desktop use</span>"describe / extract text from this image"</div>
+        <div class="env"><span class="lbl">envisioned · status</span><b>backend built &amp; validated</b> — image run (<code>fabric -a</code>) + capability rule auto-picks <code>llama3.2-vision</code> (100% GPU, accurate). Source-pane UI planned (mocked).</div></div>
+      <div class="row" data-status="planned"><div class="feat">Spotify<span class="st"><span class="dot planned"></span>planned</span></div>
+        <div class="use"><span class="lbl">desktop use</span>podcast metadata</div>
+        <div class="env"><span class="lbl">envisioned · status</span>niche; later.</div></div>
+      <div class="gnote">The source is <b>polymorphic</b>: the input pane adapts per origin; non-text origins show the transform feeding the prompt (<code>→ N chars markdown</code>). Mocked in <code>panel-mockup.html</code>.</div>
+    </div></div>
+
+  <!-- 4 -->
+  <div class="group"><div class="ghead"><span class="tw">4 · Outputs / destinations</span><span class="gnum">where the result goes</span><span class="caret">▾</span></div>
+    <div class="gbody">
+      <div class="row" data-status="built"><div class="feat">clipboard<span class="st"><span class="dot built"></span>built</span></div><div class="use"><span class="lbl">desktop use</span>universal backstop</div><div class="env"><span class="lbl">envisioned · status</span>always copied; the default send-to.</div></div>
+      <div class="row" data-status="built"><div class="feat">save to file<span class="st"><span class="dot built"></span>built</span></div><div class="use"><span class="lbl">desktop use</span>keep the artifact</div><div class="env"><span class="lbl">envisioned · status</span>per-artifact "Save…".</div></div>
+      <div class="row" data-status="built"><div class="feat">the panel<span class="st"><span class="dot built"></span>built</span></div><div class="use"><span class="lbl">desktop use</span>review without a window</div><div class="env"><span class="lbl">envisioned · status</span>launcher → broadcast → panel pane (broker).</div></div>
+      <div class="row" data-status="partial"><div class="feat">agent hand-off (Claude)<span class="st"><span class="dot partial"></span>stub</span></div><div class="use"><span class="lbl">desktop use</span>assemble a prompt, continue in a full agent</div><div class="env"><span class="lbl">envisioned · status</span>render prompt → stage → open the agent. Clipboard stub; real route = goo (deferred).</div></div>
+      <div class="row" data-status="planned"><div class="feat">TTS<span class="st"><span class="dot planned"></span>needs Gemini key</span></div><div class="use"><span class="lbl">desktop use</span>read the result aloud</div><div class="env"><span class="lbl">envisioned · status</span>a "speak" destination.</div></div>
+      <div class="row" data-status="planned"><div class="feat">image generation<span class="st"><span class="dot planned"></span>needs OpenAI/Gemini</span></div><div class="use"><span class="lbl">desktop use</span>"make a diagram/illustration"</div><div class="env"><span class="lbl">envisioned · status</span>image-gen pattern → image result (polymorphic response).</div></div>
+      <div class="gnote">Send-to is a customizable <b>destination registry</b> (Copy default + Save now; Claude/Alpaca disabled until a route exists). Per-artifact dropdowns.</div>
+    </div></div>
+
+  <!-- 5 -->
+  <div class="group"><div class="ghead"><span class="tw">5 · Conversation</span><span class="gnum">sessions</span><span class="caret">▾</span></div>
+    <div class="gbody">
+      <div class="row" data-status="built"><div class="feat">sessions<span class="st"><span class="dot built"></span>built</span></div><div class="use"><span class="lbl">desktop use</span>multi-turn / CoT without rebuilding context</div><div class="env"><span class="lbl">envisioned · status</span>the Session surface — a light chat dialog; escalate from a one-off (escalate planned).</div></div>
+      <div class="row" data-status="planned"><div class="feat">session list<span class="st"><span class="dot planned"></span>planned</span></div><div class="use"><span class="lbl">desktop use</span>resume a past conversation</div><div class="env"><span class="lbl">envisioned · status</span>a session picker.</div></div>
+    </div></div>
+
+  <!-- 6 -->
+  <div class="group"><div class="ghead"><span class="tw">6 · Context &amp; strategy</span><span class="gnum">advanced shaping</span><span class="caret">▾</span></div>
+    <div class="gbody">
+      <div class="row" data-status="planned"><div class="feat">contexts<span class="st"><span class="dot planned"></span>planned</span></div><div class="use"><span class="lbl">desktop use</span>reusable background prepended to prompts</div><div class="env"><span class="lbl">envisioned · status</span>named contexts in the loom; attach per pattern/session.</div></div>
+      <div class="row" data-status="planned"><div class="feat">strategies (CoT)<span class="st"><span class="dot planned"></span>planned</span></div><div class="use"><span class="lbl">desktop use</span>prompt strategies layered on a pattern</div><div class="env"><span class="lbl">envisioned · status</span>pick a strategy per run; needs <code>fabric --setup</code> to fetch them.</div></div>
+      <div class="row" data-status="planned"><div class="feat">extensions<span class="st"><span class="dot planned"></span>planned</span></div><div class="use"><span class="lbl">desktop use</span>custom tools fabric can call</div><div class="env"><span class="lbl">envisioned · status</span>surface registered extensions; advanced.</div></div>
+    </div></div>
+
+  <!-- 7 -->
+  <div class="group"><div class="ghead"><span class="tw">7 · Classification &amp; curation</span><span class="gnum">making it legible</span><span class="caret">▾</span></div>
+    <div class="gbody">
+      <div class="row" data-status="built"><div class="feat">active-set (globs)<span class="st"><span class="dot built"></span>built</span></div><div class="use"><span class="lbl">desktop use</span>your working subset of 265 drives the quick surfaces</div><div class="env"><span class="lbl">envisioned · status</span>include/exclude globs in the profile; edited in Library.</div></div>
+      <div class="row" data-status="built"><div class="feat">categories<span class="st"><span class="dot built"></span>built</span></div><div class="use"><span class="lbl">desktop use</span>group/reason about your setup (local/cloud/fast/deep)</div><div class="env"><span class="lbl">envisioned · status</span>on models <i>and</i> variants; stored + editable. Filtering UI planned.</div></div>
+      <div class="row" data-status="built"><div class="feat">usage index<span class="st"><span class="dot built"></span>built</span></div><div class="use"><span class="lbl">desktop use</span>see where each instantiation is applied</div><div class="env"><span class="lbl">envisioned · status</span>Models view ("used by …").</div></div>
+    </div></div>
+
+  <h2>Surfaces</h2>
+  <div class="surf">
+    <div class="s"><h3>🧵 Loom <span style="color:var(--good);font-size:11px">built</span></h3><p>The workbench (<code>window</code>): Run · <b>Library</b> (curate patterns) · <b>Models</b> (instantiation editor). Power + config; configures the rest.</p></div>
+    <div class="s"><h3>🧰 Kit <span style="color:var(--good);font-size:11px">built</span></h3><p>Quick OS tie-ins: launcher · panel popup · <b>quick-action</b> (Super+Shift+F on the selection). select → inference → review → close.</p></div>
+    <div class="s"><h3>💬 Session <span style="color:var(--good);font-size:11px">built</span></h3><p>A lightweight multi-turn chat dialog (fabric sessions). Escalate from a one-off (planned).</p></div>
+  </div>
+
+  <h2>Prototyping results <span style="font-size:12px;color:var(--faint);font-weight:400">— on-box, 2026-05-28</span></h2>
+  <table class="mini">
+    <tr><th>capability</th><th>verdict</th><th>needs</th></tr>
+    <tr><td><b>Vision</b></td><td style="color:var(--good)">✅ works, locally</td><td><code>llama3.2-vision</code> (7.8 GB, fits the GPU) or Anthropic claude. Backend + capability rule built.</td></tr>
+    <tr><td><b>Audio / STT</b></td><td style="color:var(--warn)">⬜ blocked on a key</td><td>fabric transcription is <b>OpenAI-only</b> — needs an OpenAI key.</td></tr>
+    <tr><td><b>Image generation</b></td><td style="color:var(--warn)">⬜ blocked on a key</td><td><b>OpenAI</b> or <b>Gemini</b>.</td></tr>
+    <tr><td><b>TTS</b></td><td style="color:var(--warn)">⬜ blocked on a key</td><td><b>Gemini</b>.</td></tr>
+  </table>
+  <p class="sub">Configured: Anthropic + Ollama. Unkeyed in fabric's registry: Gemini, OpenAI (+~26). <b>OpenAI</b> → STT + image-gen; <b>Gemini</b> → TTS + image-gen + Google models. "Antigravity" is not a fabric vendor — use Gemini for Google.</p>
+
+  <h2>Phase 2 — monitor-required checklist <span style="font-size:12px;color:var(--faint);font-weight:400">(saved in your browser)</span></h2>
+  <ul class="chk" id="chk">
+    <li class="sec">A · GUI validation (the live shakedown — <code>pkill cosmic-fabric-panel</code> first)</li>
+    <li><input type="checkbox"><label>Kit · panel popup — status pill, quick-run, Open workspace/Chat, one notification</label></li>
+    <li><input type="checkbox"><label>Kit · launcher — Super → verb → runs on selection → delivers</label></li>
+    <li><input type="checkbox"><label>Kit · quick-action — Super+Shift+F on a selection → grid → result + copied</label></li>
+    <li><input type="checkbox"><label>Loom · Run — source switch (clipboard/text/file/URL), prompt auto-assembles, Run streams, send-to menus</label></li>
+    <li><input type="checkbox"><label>Loom · Library — search 265, ★ curate, per-pattern "use"; popup+launcher reflect it</label></li>
+    <li><input type="checkbox"><label>Loom · Models — add/edit/delete model+variants, categories, default; writes policy.toml</label></li>
+    <li><input type="checkbox"><label>Session — multi-turn chat, streaming, New chat</label></li>
+    <li><input type="checkbox"><label>Settings window — result mode, Ollama URL, warn-below-GPU%</label></li>
+    <li class="sec">B · API enablement (<code>fabric --setup</code>)</li>
+    <li><input type="checkbox"><label>Add a Gemini key → TTS + image-gen + Google models</label></li>
+    <li><input type="checkbox"><label>Add an OpenAI key → STT/transcription + image-gen</label></li>
+    <li><input type="checkbox"><label>Verify new vendors in <code>/models/names</code> and the Models view</label></li>
+    <li class="sec">C · Then-unblocked prototyping</li>
+    <li><input type="checkbox"><label>STT — <code>fabric --transcribe-file</code> → text</label></li>
+    <li><input type="checkbox"><label>Image-gen — <code>fabric --image-file</code> → an image</label></li>
+    <li><input type="checkbox"><label>TTS — a Gemini voice reads a result aloud</label></li>
+    <li class="sec">D · Build</li>
+    <li class="done"><input type="checkbox" checked disabled><label>Capability rule + image-run backend — <i>done &amp; socket-validated</i></label></li>
+    <li><input type="checkbox"><label>Image source pane (UI) — thumbnail/picker + active model badge; wire the Rust client</label></li>
+  </ul>
+
+  <h2>Roadmap <span style="font-size:12px;color:var(--faint);font-weight:400">— by value × feasibility</span></h2>
+  <ul class="road">
+    <li><b>Live shakedown</b> of what's built (no new code; needs a monitor).</li>
+    <li><b>Escalate-from-one-off</b> → open a session seeded with a result.</li>
+    <li><b>Capability rule + image source</b> — rule + backend <b style="color:var(--good)">done</b>; image-source UI remains.</li>
+    <li><b>Audio in / TTS out</b> — the voice loop (fabric does STT + TTS natively). Needs keys.</li>
+    <li><b>Contexts &amp; strategies</b> — reusable background + CoT strategies.</li>
+    <li><b>goo routing</b> — real agent hand-off, when goo's route layer exists.</li>
+  </ul>
+
+  <div class="goo">
+    <span class="tag">APPENDIX · goo — isolated, aspirational, out of scope</span>
+    <h2>goo &amp; the 4th surface</h2>
+    <p>goo is a <b>sibling router</b>, not part of cosmic-fabric — which ships fully without it and depends on nothing goo-specific.</p>
+    <p><b>The unpublicized 4th surface: the daemon socket.</b> The three UIs are all clients of one thing — the <code>cosmic-fabricd</code> unix socket (line-JSON). That socket <i>is</i> a surface: the programmatic/headless one, the seam any external automation (goo, a script, an MCP bridge) touches. No special bridge — speak the protocol and you're a client.</p>
+    <table class="mini">
+      <tr><th>op</th><th>does</th></tr>
+      <tr><td><code>ping</code> / <code>status</code></td><td>health; serve + loaded model + GPU%</td></tr>
+      <tr><td><code>patterns</code> / <code>models</code> / <code>surface</code></td><td>discovery: all patterns; vendor→models; the curated active-set</td></tr>
+      <tr><td><code>assemble</code></td><td>render a pattern's prompt — no model run</td></tr>
+      <tr><td><code>run</code> (+ stream, broadcast, image)</td><td>execute → result; stream; broadcast to panel; vision via image</td></tr>
+      <tr><td><code>fetch</code></td><td>URL → markdown (Jina / readability)</td></tr>
+      <tr><td><code>subscribe</code></td><td>receive broadcast results (the panel's channel)</td></tr>
+    </table>
+    <p><b>Two arrows.</b> <b>goo → fabric</b>: goo consumes the socket as a client (<code>inference</code>→<code>run</code>, <code>assemble</code>→<code>assemble</code>). <b>fabric → goo</b>: a "Send to goo" destination that hands an artifact to <b>goo's UI</b> (seeded) for interactive routing — <i>the UI, not the socket</i>; goo as a <b>meta-destination</b> ("let goo route it"). So send-to should allow dispatcher destinations, not just terminal sinks. Both arrows optional. Full design: <code>cosmic-goo-integration.md</code>.</p>
+  </div>
+
+  <p class="foot">Generated companion to <code>doc/fabric-on-the-desktop.md</code> · cosmic-fabric</p>
 </div>
-
-<div class="filters">
-  <span class="lbl">show:</span>
-  <span class="chip on" data-f="done"><span class="badge b-done">✅ built</span></span>
-  <span class="chip on" data-f="partial"><span class="badge b-partial">🔶 partial</span></span>
-  <span class="chip on" data-f="planned"><span class="badge b-planned">⬜ planned</span></span>
-  <span class="chip on" data-f="proto"><span class="badge b-proto">🔬 prototyping</span></span>
-</div>
-
-<h2>Feature catalog</h2>
-<div id="catalog"></div>
-
-<h2>Prototyping results &amp; API availability <span class="note">(2026-05-28)</span></h2>
-<table class="mini">
-  <tr><td>Vision</td><td><span class="badge b-done">✅ works, locally</span> — <code>llama3.2-vision</code> (7.8 GB, fits the 11 GB GPU; accurate) + via Anthropic claude. <b>Capability rule built &amp; socket-validated</b> (auto-picks a vision model for image runs).</td></tr>
-  <tr><td>Audio / STT</td><td><span class="badge b-planned">⬜ needs key</span> — fabric transcription is OpenAI-only (whisper / gpt-4o-transcribe); no local option.</td></tr>
-  <tr><td>Image-gen</td><td><span class="badge b-planned">⬜ needs key</span> — OpenAI or Gemini.</td></tr>
-  <tr><td>TTS</td><td><span class="badge b-planned">⬜ needs key</span> — Gemini.</td></tr>
-</table>
-<p class="note">Configured: Anthropic + Ollama. Unkeyed in the registry: Gemini, OpenAI (+~26). OpenAI → STT + image-gen; Gemini → TTS + image-gen + Google models. “Antigravity” is not a fabric vendor (it’s Google’s IDE) — use Gemini.</p>
-
-<h2>Phase 2 — monitor-required checklist</h2>
-<p class="note">Headless phase (prototyping, daemon engines, docs) is done. These need a screen / <code>fabric --setup</code>.</p>
-<h3>A · GUI validation (reload: <code>pkill cosmic-fabric-panel</code>)</h3>
-<ul class="check">
-  <li><label><input type="checkbox"> Kit · panel popup — status pill, quick-run, Open workspace/Chat, one notification</label></li>
-  <li><label><input type="checkbox"> Kit · launcher — Super → verb → runs on selection → delivers</label></li>
-  <li><label><input type="checkbox"> Kit · quick-action — Super+Shift+F → grid → run → inline result + copied</label></li>
-  <li><label><input type="checkbox"> Loom · Run — source (clipboard/text/file/URL), assemble, Run streams, send-to</label></li>
-  <li><label><input type="checkbox"> Loom · Library — search/★ curate; popup+launcher reflect it</label></li>
-  <li><label><input type="checkbox"> Loom · Models — add/edit model+variants, categories, default; writes policy.toml</label></li>
-  <li><label><input type="checkbox"> Session — multi-turn chat, streaming, New chat</label></li>
-  <li><label><input type="checkbox"> Settings window — result mode, Ollama URL, warn%</label></li>
-</ul>
-<h3>B · API enablement (<code>! fabric --setup</code>)</h3>
-<ul class="check">
-  <li><label><input type="checkbox"> Gemini key → TTS, image-gen, Google models</label></li>
-  <li><label><input type="checkbox"> OpenAI key → STT/transcription, image-gen</label></li>
-  <li><label><input type="checkbox"> verify new vendors in /models/names + the Models view</label></li>
-</ul>
-<h3>C · Then-unblocked prototyping</h3>
-<ul class="check">
-  <li><label><input type="checkbox"> STT — fabric --transcribe-file</label></li>
-  <li><label><input type="checkbox"> Image-gen — fabric --image-file</label></li>
-  <li><label><input type="checkbox"> TTS — a Gemini voice</label></li>
-</ul>
-<h3>D · Build (vision proven)</h3>
-<ul class="check">
-  <li><label><input type="checkbox" checked> <s>Capability rule + image-run backend</s> — done, socket-validated</label></li>
-  <li><label><input type="checkbox"> Image source pane (UI) + active-model badge; wire the Rust client</label></li>
-</ul>
-
-<p class="note" style="margin-top:30px">See also: <a href="getting-started.md">getting-started.md</a> · <a href="panel-mockup.html">panel-mockup.html</a> · the full <code>fabric-on-the-desktop.md</code> (incl. surfaces, roadmap, goo appendix).</p>
 
 <script>
-const groups = [
- {t:"1 · Patterns — the verbs", rows:[
-   ["patterns (265) — a system prompt that transforms input","the core action on whatever you're looking at; curate a working set","done"],
-   ["pattern variables ({{lang}}, {{depth}})","adverbs — “summarize deeply”","partial","daemon passes them; UI editing planned"],
-   ["curation (include/exclude globs)","your working subset drives the quick surfaces","done"],
- ]},
- {t:"2 · Models &amp; vendors", rows:[
-   ["~30 vendors (Ollama, Anthropic, OpenAI, Gemini…)","local for cheap/private, cloud for hard tasks","done","only configured vendors surface"],
-   ["per-pattern model/vendor (named instantiations)","the right tool per verb","done","Models editor"],
-   ["deployment params → model→variants (ctx/thinking/temp)","right-size KV cache; toggle reasoning","done","two-level instantiations + editor"],
-   ["modelContextLength (auto-size)","short inputs stay on GPU; long inputs grow","done","pick_ctx fallback"],
-   ["capabilities + capability rule","a vision pattern can't run on a text model","done","rule auto-swaps to a vision model; socket-validated"],
-   ["ChatOptions search (model-side web search)","answer using the web without scraping","planned"],
- ]},
- {t:"3 · Inputs / sources", rows:[
-   ["text / clipboard","the everyday case","done"],
-   ["primary selection","act on highlighted text, zero copy-paste","done","quick-action + launcher"],
-   ["file","run a pattern over a document","partial","path-paste; native picker planned"],
-   ["URL / web (Jina scrape, readability)","“summarize this page”","done","daemon fetches → markdown; keyless"],
-   ["YouTube (transcript/comments)","“summarize this talk”","planned"],
-   ["audio (transcribe, STT)","voice notes; meeting recaps","planned","needs OpenAI key (STT is OpenAI-only)"],
-   ["image (attachment, vision)","describe / OCR an image","partial","backend built (capability rule + fabric -a, validated); source UI planned"],
- ]},
- {t:"4 · Outputs / destinations", rows:[
-   ["clipboard","universal backstop","done","always copied; default send-to"],
-   ["save to file","keep the artifact","done"],
-   ["the panel","review without a window","done","launcher → broadcast → panel"],
-   ["hand off to an agent (Claude)","assemble a prompt, continue in a full agent","partial","clipboard stub; real route = goo (deferred)"],
-   ["TTS (speak the result)","read aloud; back half of the voice loop","planned","needs Gemini key"],
-   ["image generation","make a diagram/illustration","planned","needs OpenAI/Gemini key"],
- ]},
- {t:"5 · Conversation — sessions", rows:[
-   ["sessions (server-side history)","multi-turn / CoT without rebuilding context","done","the Session surface"],
-   ["escalate a one-off into a session","“turn this result into a conversation”","planned"],
-   ["session list / resume","resume a past conversation","planned"],
- ]},
- {t:"6 · Context &amp; strategy", rows:[
-   ["contexts","reusable background prepended to prompts","planned"],
-   ["strategies (CoT etc.)","prompt strategies layered on a pattern","planned","needs fabric --setup to fetch"],
-   ["extensions","custom tools fabric can call","planned"],
- ]},
- {t:"7 · Classification &amp; curation", rows:[
-   ["active-set (globs)","your working subset of 265","done"],
-   ["categories (models + variants)","group/reason about your setup","done","editable; filtering UI planned"],
-   ["usage index","see where each instantiation is applied","done","Models view"],
- ]},
-];
-const BADGE={done:["b-done","✅ built"],partial:["b-partial","🔶 partial"],planned:["b-planned","⬜ planned"],proto:["b-proto","🔬 prototyping"]};
-const cat=document.getElementById("catalog");
-groups.forEach(g=>{
-  const counts={};(g.rows).forEach(r=>counts[r[2]]=(counts[r[2]]||0)+1);
-  const d=document.createElement("details");d.className="group";d.open=true;
-  const csum=Object.entries(counts).map(([k,v])=>`${v} ${BADGE[k][1].split(" ")[0]}`).join("  ");
-  d.innerHTML=`<summary><span class="caret">▸</span><span>${g.t}</span><span class="count">${csum}</span></summary>`;
-  const rows=document.createElement("div");rows.className="rows";
-  g.rows.forEach(r=>{
-    const [f,why,st,env]=r;const [cls,lbl]=BADGE[st];
-    const el=document.createElement("div");el.className="row";el.dataset.status=st;
-    el.innerHTML=`<div class="f"><b>${f}</b></div><div class="why">${why}${env?`<span class="env">${env}</span>`:""}</div><div class="st"><span class="badge ${cls}">${lbl}</span></div>`;
-    rows.appendChild(el);
+(function(){
+  // status filter
+  var rows=[].slice.call(document.querySelectorAll('.row[data-status]'));
+  var counts={all:rows.length,built:0,partial:0,planned:0};
+  rows.forEach(function(r){counts[r.dataset.status]++});
+  ['all','built','partial','planned'].forEach(function(k){var e=document.getElementById('n-'+k);if(e)e.textContent=counts[k]});
+  document.querySelectorAll('.flt').forEach(function(b){
+    b.addEventListener('click',function(){
+      document.querySelectorAll('.flt').forEach(function(x){x.classList.remove('on')});
+      b.classList.add('on');
+      var f=b.dataset.f;
+      rows.forEach(function(r){r.style.display=(f==='all'||r.dataset.status===f)?'':'none'});
+      // collapse groups with no visible rows
+      document.querySelectorAll('.group').forEach(function(g){
+        var vis=[].slice.call(g.querySelectorAll('.row')).some(function(r){return r.style.display!=='none'});
+        g.style.display=vis?'':'none';
+      });
+    });
   });
-  d.appendChild(rows);cat.appendChild(d);
-});
-// filters
-const active=new Set(["done","partial","planned","proto"]);
-document.querySelectorAll(".chip").forEach(c=>c.addEventListener("click",()=>{
-  const f=c.dataset.f;c.classList.toggle("on");
-  if(active.has(f))active.delete(f);else active.add(f);
-  document.querySelectorAll(".row").forEach(r=>{
-    r.classList.toggle("hidden",!active.has(r.dataset.status));
+  // collapsible groups
+  document.querySelectorAll('.ghead').forEach(function(h){
+    h.addEventListener('click',function(){h.parentNode.classList.toggle('collapsed')});
   });
-  // hide groups with no visible rows
-  document.querySelectorAll(".group").forEach(g=>{
-    const any=[...g.querySelectorAll(".row")].some(r=>!r.classList.contains("hidden"));
-    g.classList.toggle("hidden",!any);
+  // checklist persistence
+  var KEY='cf-phase2-checklist';
+  var saved={};try{saved=JSON.parse(localStorage.getItem(KEY)||'{}')}catch(e){}
+  var boxes=[].slice.call(document.querySelectorAll('#chk input:not([disabled])'));
+  boxes.forEach(function(cb,i){
+    if(saved[i]){cb.checked=true;cb.closest('li').classList.add('done')}
+    cb.addEventListener('change',function(){
+      cb.closest('li').classList.toggle('done',cb.checked);
+      saved[i]=cb.checked;localStorage.setItem(KEY,JSON.stringify(saved));
+    });
   });
-}));
+})();
 </script>
-</div></body></html>
+</body>
+</html>
