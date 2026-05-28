@@ -124,11 +124,12 @@ def handle(req):
         return {"text": text, "chars": len(text)}
     if op == "status":
         pol = core.load_policy()
+        dinst = core.resolve("", pol)  # "" ∉ patterns → resolves the default
         return {"serve": FAB.alive(),
                 "loaded": core.loaded_models(pol["ollama"]["url"]),
                 "vram": core.gpu_vram(),
-                "default_model": pol["default"].get("model"),
-                "default_vendor": pol["default"].get("vendor")}
+                "default_model": dinst.get("model"),
+                "default_vendor": dinst.get("vendor")}
     if op == "run":
         pat = req.get("pattern")
         if not pat:

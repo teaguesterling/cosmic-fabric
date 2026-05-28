@@ -31,6 +31,9 @@ pub const WORKSPACE_APP_ID: &str = "com.github.teaguesterling.CosmicFabric.Works
 /// global default model."
 const DEFAULT_VENDOR: &str = "Default";
 
+/// New-variant `thinking` dropdown: index 0 = inherit/none, 1 = off, 2 = on.
+const THINKING_OPTS: [&str; 3] = ["(default)", "off", "on"];
+
 pub fn run() -> cosmic::iced::Result {
     let settings = cosmic::app::Settings::default().size(cosmic::iced::Size::new(640.0, 780.0));
     cosmic::app::run::<Workspace>(settings, ())
@@ -101,6 +104,15 @@ pub struct Workspace {
     library_query: String,
     catalog: BTreeMap<String, Vec<String>>, // vendor → models, for the picker
     lib_selected: Option<String>,           // pattern being configured in Library
+    // --- Models editor drafts ---
+    model_selected: Option<String>, // model whose editor is open
+    am_name: String,                // new-model name
+    am_vendor: Option<usize>,       // new-model vendor (index into catalog keys)
+    am_model: Option<usize>,        // new-model model (index into that vendor's list)
+    cat_draft: String,              // selected model's categories (comma-edited)
+    av_name: String,                // new-variant name
+    av_ctx: String,                 // new-variant ctx (numeric text)
+    av_thinking: Option<usize>,     // new-variant thinking (index into THINKING_OPTS)
 
     origin: Origin,
     source: text_editor::Content,
@@ -151,6 +163,22 @@ pub enum Message {
     CatalogDone(Result<BTreeMap<String, Vec<String>>, String>),
     LibSelect(String),
     SetPatternUse(String, String),
+    // --- Models editor ---
+    AmName(String),
+    AmVendor(usize),
+    AmModel(usize),
+    AddModel,
+    SelectModel(String),
+    DeleteModel(String),
+    CatDraft(String),
+    CommitCats(String),
+    SetModelDefaultVariant(String, String),
+    AvName(String),
+    AvCtx(String),
+    AvThinking(usize),
+    AddVariant(String),
+    DeleteVariant(String, String),
+    SetGlobalUse(String),
     Retry,
     Clear,
     OpenSettings,
@@ -188,6 +216,14 @@ impl cosmic::Application for Workspace {
             library_query: String::new(),
             catalog: BTreeMap::new(),
             lib_selected: None,
+            model_selected: None,
+            am_name: String::new(),
+            am_vendor: None,
+            am_model: None,
+            cat_draft: String::new(),
+            av_name: String::new(),
+            av_ctx: String::new(),
+            av_thinking: None,
             origin: Origin::Clipboard,
             source: text_editor::Content::new(),
             url_input: String::new(),
@@ -422,6 +458,115 @@ impl cosmic::Application for Workspace {
                         Assignment { use_: Some(target), ..Default::default() },
                     );
                 }
+                self.persist();
+            }
+            Message::AmName(s) => self.am_name = s,
+            Message::AmVendor(i) => {
+                self.am_vendor = Some(i);
+                self.am_model = None;
+            }
+            Message::AmModel(i) => self.am_model = Some(i),
+            Message::AddModel => {
+                let name = self.am_name.trim().to_string();
+                let vendors: Vec<String> = self.catalog.keys().cloned().collect();
+                if !name.is_empty() && !self.policy.models.contains_key(&name) {
+                    if let Some(vendor) = self.am_vendor.and_then(|i| vendors.get(i)).cloned() {
+                        let model = self
+                            .am_model
+                            .and_then(|mi| self.catalog.get(&vendor).and_then(|m| m.get(mi)))
+                            .cloned()
+                            .unwrap_or_default();
+                        if !model.is_empty() {
+                            self.policy.models.insert(
+                                name.clone(),
+                                policy::Model { vendor, model, ..Default::default() },
+                            );
+                            self.persist();
+                            self.am_name.clear();
+                            self.am_vendor = None;
+                            self.am_model = None;
+                            self.cat_draft.clear();
+                            self.model_selected = Some(name);
+                        }
+                    }
+                }
+            }
+            Message::SelectModel(name) => {
+                self.cat_draft = self
+                    .policy
+                    .models
+                    .get(&name)
+                    .map(|m| m.categories.join(", "))
+                    .unwrap_or_default();
+                self.model_selected = if self.model_selected.as_deref() == Some(name.as_str()) {
+                    None
+                } else {
+                    Some(name)
+                };
+            }
+            Message::DeleteModel(name) => {
+                self.policy.models.remove(&name);
+                if self.model_selected.as_deref() == Some(name.as_str()) {
+                    self.model_selected = None;
+                }
+                self.persist();
+            }
+            Message::CatDraft(s) => self.cat_draft = s,
+            Message::CommitCats(name) => {
+                if let Some(m) = self.policy.models.get_mut(&name) {
+                    m.categories = self
+                        .cat_draft
+                        .split(',')
+                        .map(|x| x.trim().to_string())
+                        .filter(|x| !x.is_empty())
+                        .collect();
+                    self.persist();
+                }
+            }
+            Message::SetModelDefaultVariant(name, v) => {
+                if let Some(m) = self.policy.models.get_mut(&name) {
+                    m.default = if v.is_empty() { None } else { Some(v) };
+                    self.persist();
+                }
+            }
+            Message::AvName(s) => self.av_name = s,
+            Message::AvCtx(s) => self.av_ctx = s,
+            Message::AvThinking(i) => self.av_thinking = Some(i),
+            Message::AddVariant(model) => {
+                let vname = self.av_name.trim().to_string();
+                if !vname.is_empty() {
+                    if let Some(m) = self.policy.models.get_mut(&model) {
+                        let ctx = self.av_ctx.trim().parse::<u32>().ok();
+                        let thinking = match self.av_thinking {
+                            Some(1) => Some("off".into()),
+                            Some(2) => Some("on".into()),
+                            _ => None,
+                        };
+                        m.variants.insert(
+                            vname.clone(),
+                            policy::Variant { ctx, thinking, ..Default::default() },
+                        );
+                        if m.default.is_none() {
+                            m.default = Some(vname);
+                        }
+                        self.persist();
+                        self.av_name.clear();
+                        self.av_ctx.clear();
+                        self.av_thinking = None;
+                    }
+                }
+            }
+            Message::DeleteVariant(model, vname) => {
+                if let Some(m) = self.policy.models.get_mut(&model) {
+                    m.variants.remove(&vname);
+                    if m.default.as_deref() == Some(vname.as_str()) {
+                        m.default = m.variants.keys().next().cloned();
+                    }
+                    self.persist();
+                }
+            }
+            Message::SetGlobalUse(u) => {
+                self.policy.default = Assignment { use_: Some(u), ..Default::default() };
                 self.persist();
             }
             Message::Retry => return self.update(Message::Run),
@@ -667,77 +812,158 @@ impl Workspace {
             .into()
     }
 
-    /// The Models view: every model instantiation, its variants, categories, and
-    /// who uses it — the legible inventory ("easier to reason about").
+    /// The Models view: define/edit model instantiations + variants, classify
+    /// with categories, set the default variant, and see who uses each — the
+    /// legible, editable inventory.
     fn models_view(&self, s: &cosmic::cosmic_theme::Spacing) -> Element<'_, Message> {
         let usage = self.policy.usage();
         let chips = |items: &[String]| -> String {
-            if items.is_empty() { String::new() } else { format!("  [{}]", items.join(", ")) }
+            if items.is_empty() { ": —".into() } else { format!(" [{}]", items.join(", ")) }
         };
 
+        // ---- global default ----
+        let duses = self.policy.use_options();
+        let dcur = self.policy.default.use_.clone();
+        let didx = dcur.as_ref().and_then(|u| duses.iter().position(|o| o == u));
+        let duses_cb = duses.clone();
+        let default_dd = dropdown(duses, didx, move |i| Message::SetGlobalUse(duses_cb[i].clone()));
+        let default_row = cosmic::iced::widget::row![
+            text::body("Default model").width(Length::Fixed(110.0)),
+            default_dd,
+            text::caption(match &dcur {
+                Some(_) => String::new(),
+                None => format!("currently inline: {}", self.policy.default.label()),
+            }),
+        ]
+        .spacing(s.space_xs)
+        .align_y(Alignment::Center);
+
+        // ---- add a model ----
+        let vendors: Vec<String> = self.catalog.keys().cloned().collect();
+        let cur_vendor = self.am_vendor.and_then(|i| vendors.get(i)).cloned();
+        let vendor_dd = dropdown(vendors, self.am_vendor, Message::AmVendor);
+        let models_for_vendor: Vec<String> =
+            cur_vendor.as_ref().and_then(|v| self.catalog.get(v)).cloned().unwrap_or_default();
+        let model_dd = dropdown(models_for_vendor, self.am_model, Message::AmModel);
+        let add_row = cosmic::iced::widget::row![
+            text_input("new model name", &self.am_name).on_input(Message::AmName).width(Length::Fixed(150.0)),
+            vendor_dd,
+            model_dd,
+            button::standard("Add").on_press(Message::AddModel),
+        ]
+        .spacing(s.space_xs)
+        .align_y(Alignment::Center);
+
+        // ---- model cards ----
         let mut list = Column::new().spacing(s.space_s);
-        if self.policy.models.is_empty() {
-            list = list.push(text::body(
-                "No model instantiations defined yet. Add a [models.<name>] block in \
-                 policy.toml (vendor, model, optional variants); a visual editor is coming. \
-                 Patterns fall back to the global default until then.",
-            ));
-        }
         for (name, m) in &self.policy.models {
-            let mut card = Column::new().spacing(s.space_xxs);
-            // header: name · model · vendor
-            card = card.push(
+            let editing = self.model_selected.as_deref() == Some(name.as_str());
+            let n1 = name.clone();
+            let n2 = name.clone();
+            let mut card = Column::new().spacing(s.space_xxs).push(
                 cosmic::iced::widget::row![
                     text::heading(name.clone()),
                     cosmic::widget::Space::new().width(Length::Fill),
                     text::caption(format!("{} \u{00b7} {}", m.model, m.vendor)),
+                    button::text(if editing { "Done" } else { "Edit" }).on_press(Message::SelectModel(n1)),
+                    button::text("\u{2715}").on_press(Message::DeleteModel(n2)),
                 ]
+                .spacing(s.space_xxs)
                 .align_y(Alignment::Center),
             );
-            let class_line = format!(
+            card = card.push(text::caption(format!(
                 "capabilities{}   categories{}",
-                if m.capabilities.is_empty() { ": —".into() } else { chips(&m.capabilities) },
-                if m.categories.is_empty() { ": —".into() } else { chips(&m.categories) },
-            );
-            card = card.push(text::caption(class_line));
-            // base usage (use = "model")
+                chips(&m.capabilities),
+                chips(&m.categories)
+            )));
             if let Some(users) = usage.get(name) {
                 card = card.push(text::caption(format!("used by: {}", users.join(", "))));
             }
-            // variants
             for (vname, v) in &m.variants {
-                let is_default = m.default.as_deref() == Some(vname.as_str());
+                let star = if m.default.as_deref() == Some(vname.as_str()) { "\u{2605} " } else { "  " };
                 let mut parts: Vec<String> = Vec::new();
                 if let Some(c) = v.ctx { parts.push(format!("ctx {c}")); }
                 if let Some(t) = &v.thinking { parts.push(format!("think {t}")); }
                 if let Some(t) = v.temperature { parts.push(format!("temp {t}")); }
-                let star = if is_default { "\u{2605} " } else { "  " };
                 let key = format!("{name}/{vname}");
                 let used = usage.get(&key).map(|u| format!("  \u{2190} {}", u.join(", "))).unwrap_or_default();
-                card = card.push(text::caption(format!(
-                    "{star}{vname}: {}{}{}",
+                let line = text::caption(format!(
+                    "{star}{vname}: {}{}",
                     if parts.is_empty() { "base params".into() } else { parts.join(", ") },
-                    chips(&v.categories),
                     used,
-                )));
+                ));
+                if editing {
+                    let (mn, vn) = (name.clone(), vname.clone());
+                    card = card.push(
+                        cosmic::iced::widget::row![
+                            line,
+                            cosmic::widget::Space::new().width(Length::Fill),
+                            button::text("\u{2715}").on_press(Message::DeleteVariant(mn, vn)),
+                        ]
+                        .align_y(Alignment::Center),
+                    );
+                } else {
+                    card = card.push(line);
+                }
+            }
+
+            if editing {
+                card = card.push(divider::horizontal::default());
+                // categories editor
+                let nm_c = name.clone();
+                card = card.push(
+                    cosmic::iced::widget::row![
+                        text::body("Categories").width(Length::Fixed(90.0)),
+                        text_input("comma, separated", &self.cat_draft)
+                            .on_input(Message::CatDraft)
+                            .on_submit(move |_| Message::CommitCats(nm_c.clone())),
+                    ]
+                    .spacing(s.space_xs)
+                    .align_y(Alignment::Center),
+                );
+                // default-variant picker
+                if !m.variants.is_empty() {
+                    let vnames: Vec<String> = m.variants.keys().cloned().collect();
+                    let vidx = m.default.as_ref().and_then(|d| vnames.iter().position(|v| v == d));
+                    let nm_d = name.clone();
+                    let vnames_cb = vnames.clone();
+                    card = card.push(
+                        cosmic::iced::widget::row![
+                            text::body("Default variant").width(Length::Fixed(90.0)),
+                            dropdown(vnames, vidx, move |i| Message::SetModelDefaultVariant(
+                                nm_d.clone(),
+                                vnames_cb[i].clone()
+                            )),
+                        ]
+                        .spacing(s.space_xs)
+                        .align_y(Alignment::Center),
+                    );
+                }
+                // add-variant row
+                let nm_v = name.clone();
+                card = card.push(
+                    cosmic::iced::widget::row![
+                        text_input("variant", &self.av_name).on_input(Message::AvName).width(Length::Fixed(90.0)),
+                        text_input("ctx", &self.av_ctx).on_input(Message::AvCtx).width(Length::Fixed(70.0)),
+                        dropdown(THINKING_OPTS.iter().map(|s| s.to_string()).collect::<Vec<_>>(), self.av_thinking, Message::AvThinking),
+                        button::standard("Add variant").on_press(Message::AddVariant(nm_v)),
+                    ]
+                    .spacing(s.space_xs)
+                    .align_y(Alignment::Center),
+                );
             }
             list = list.push(container(card).padding(s.space_xs).class(theme::Container::Card));
         }
+        if self.policy.models.is_empty() {
+            list = list.push(text::caption("No models yet — add one above."));
+        }
 
-        let nvendors = self.catalog.len();
-        let nmodels: usize = self.catalog.values().map(|v| v.len()).sum();
         Column::new()
             .spacing(s.space_xs)
-            .push(
-                cosmic::iced::widget::row![
-                    text::heading("Models"),
-                    cosmic::widget::Space::new().width(Length::Fill),
-                    text::caption(format!("{nmodels} models across {nvendors} vendors available")),
-                ]
-                .align_y(Alignment::Center),
-            )
-            .push(text::caption("★ = default variant. Define/edit in policy.toml for now."))
-            .push(scrollable(list).height(Length::Fixed(440.0)))
+            .push(default_row)
+            .push(add_row)
+            .push(text::caption("\u{2605} = default variant.  Edit a model to add variants / categories."))
+            .push(scrollable(list).height(Length::Fixed(380.0)))
             .into()
     }
 
