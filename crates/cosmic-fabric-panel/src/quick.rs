@@ -42,6 +42,7 @@ pub enum Message {
     RunPattern(String),
     RunEvent(daemon::RunEvent),
     Copy,
+    Chat,
     Another,
     Close,
 }
@@ -134,6 +135,15 @@ impl cosmic::Application for QuickApp {
                     daemon::set_clipboard(r);
                 }
             }
+            Message::Chat => {
+                // Escalate the result into a chat, then close this quick popup.
+                if let (Ok(exe), Some(r)) = (std::env::current_exe(), &self.result) {
+                    if !r.trim().is_empty() {
+                        let _ = std::process::Command::new(exe).arg("session").arg(r).spawn();
+                        std::process::exit(0);
+                    }
+                }
+            }
             Message::Another => {
                 self.result = None;
                 self.result_meta = None;
@@ -181,7 +191,8 @@ impl cosmic::Application for QuickApp {
             col = col.push(
                 cosmic::iced::widget::row![
                     button::standard("Copy").on_press(Message::Copy),
-                    button::text("↺ Another").on_press(Message::Another),
+                    button::text("\u{21aa} Chat").on_press(Message::Chat),
+                    button::text("\u{21ba} Another").on_press(Message::Another),
                     cosmic::widget::Space::new().width(Length::Fill),
                     button::suggested("Close").on_press(Message::Close),
                 ]

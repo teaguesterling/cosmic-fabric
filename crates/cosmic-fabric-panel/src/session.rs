@@ -61,11 +61,14 @@ impl cosmic::Application for SessionApp {
     const APP_ID: &'static str = SESSION_APP_ID;
 
     fn init(core: app::Core, _flags: Self::Flags) -> (Self, app::Task<Self::Message>) {
+        // Escalate-from-a-one-off: trailing args (`… session <text>`) seed the
+        // input, so "↪ Chat" on a result drops you into a chat carrying it.
+        let seed = std::env::args().skip(2).collect::<Vec<_>>().join(" ");
         let me = Self {
             core,
             session: new_session_name(),
             messages: Vec::new(),
-            input: String::new(),
+            input: seed,
             pending: None,
             run_seq: 0,
             streaming: false,
@@ -171,9 +174,12 @@ impl cosmic::Application for SessionApp {
             convo = convo.push(container(block).padding(s.space_xs).class(class).width(Length::Fill));
         }
         if self.messages.is_empty() {
-            convo = convo.push(text::caption(
-                "Start a conversation — fabric keeps the history for this session.",
-            ));
+            let hint = if self.input.trim().is_empty() {
+                "Start a conversation — fabric keeps the history for this session."
+            } else {
+                "Carried over from a result — edit / add your question below, then send."
+            };
+            convo = convo.push(text::caption(hint));
         }
 
         let input_row = cosmic::iced::widget::row![

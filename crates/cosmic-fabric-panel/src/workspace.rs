@@ -183,6 +183,7 @@ pub enum Message {
     Clear,
     OpenSettings,
     OpenSession,
+    ContinueInChat,
     Refresh,
     DismissError,
 }
@@ -588,6 +589,14 @@ impl cosmic::Application for Workspace {
             Message::OpenSession => {
                 if let Ok(exe) = std::env::current_exe() {
                     let _ = std::process::Command::new(exe).arg("session").spawn();
+                }
+            }
+            Message::ContinueInChat => {
+                // Escalate this result into a chat, seeded with the response.
+                if let (Ok(exe), Some(r)) = (std::env::current_exe(), &self.response) {
+                    if !r.trim().is_empty() {
+                        let _ = std::process::Command::new(exe).arg("session").arg(r).spawn();
+                    }
                 }
             }
             Message::Refresh => return cosmic::Task::batch([status_task(), patterns_task()]),
@@ -1107,12 +1116,16 @@ impl Workspace {
                 .height(Length::Fixed(40.0)),
         };
         let has = self.response.as_deref().map(|r| !r.is_empty()).unwrap_or(false);
-        let actions = cosmic::iced::widget::row![
-            cosmic::widget::Space::new().width(Length::Fill),
-            self.sendto(Artifact::Response, "Copy response", has),
-        ]
-        .spacing(s.space_xs)
-        .align_y(Alignment::Center);
+        let chat: Element<_> = if has {
+            button::text("\u{21aa} Chat").on_press(Message::ContinueInChat).into()
+        } else {
+            button::text("\u{21aa} Chat").into()
+        };
+        let actions = cosmic::iced::widget::row![cosmic::widget::Space::new().width(Length::Fill)]
+            .push(chat)
+            .push(self.sendto(Artifact::Response, "Copy response", has))
+            .spacing(s.space_xs)
+            .align_y(Alignment::Center);
 
         container(Column::new().spacing(s.space_xxs).push(head).push(body).push(actions))
             .padding(s.space_xs)

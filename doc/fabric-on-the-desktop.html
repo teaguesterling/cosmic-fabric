@@ -197,7 +197,7 @@
   <!-- 5 -->
   <div class="group"><div class="ghead"><span class="tw">5 · Conversation</span><span class="gnum">sessions</span><span class="caret">▾</span></div>
     <div class="gbody">
-      <div class="row" data-status="built"><div class="feat">sessions<span class="st"><span class="dot built"></span>built</span></div><div class="use"><span class="lbl">desktop use</span>multi-turn / CoT without rebuilding context</div><div class="env"><span class="lbl">envisioned · status</span>the Session surface — a light chat dialog; escalate from a one-off (escalate planned).</div></div>
+      <div class="row" data-status="built"><div class="feat">sessions<span class="st"><span class="dot built"></span>built</span></div><div class="use"><span class="lbl">desktop use</span>multi-turn / CoT without rebuilding context</div><div class="env"><span class="lbl">envisioned · status</span>the Session surface — a light chat dialog; <b>escalate from a one-off built</b> ("↪ Chat" on a result seeds a session).</div></div>
       <div class="row" data-status="planned"><div class="feat">session list<span class="st"><span class="dot planned"></span>planned</span></div><div class="use"><span class="lbl">desktop use</span>resume a past conversation</div><div class="env"><span class="lbl">envisioned · status</span>a session picker.</div></div>
     </div></div>
 
@@ -221,7 +221,7 @@
   <div class="surf">
     <div class="s"><h3>🧵 Loom <span style="color:var(--good);font-size:11px">built</span></h3><p>The workbench (<code>window</code>): Run · <b>Library</b> (curate patterns) · <b>Models</b> (instantiation editor). Power + config; configures the rest.</p></div>
     <div class="s"><h3>🧰 Kit <span style="color:var(--good);font-size:11px">built</span></h3><p>Quick OS tie-ins: launcher · panel popup · <b>quick-action</b> (Super+Shift+F on the selection). select → inference → review → close.</p></div>
-    <div class="s"><h3>💬 Session <span style="color:var(--good);font-size:11px">built</span></h3><p>A lightweight multi-turn chat dialog (fabric sessions). Escalate from a one-off (planned).</p></div>
+    <div class="s"><h3>💬 Session <span style="color:var(--good);font-size:11px">built</span></h3><p>A lightweight multi-turn chat dialog (fabric sessions). Escalate from a one-off — "↪ Chat" on a result seeds a session.</p></div>
   </div>
 
   <h2>Prototyping results <span style="font-size:12px;color:var(--faint);font-weight:400">— on-box, 2026-05-28</span></h2>
@@ -261,7 +261,7 @@
   <h2>Roadmap <span style="font-size:12px;color:var(--faint);font-weight:400">— by value × feasibility</span></h2>
   <ul class="road">
     <li><b>Live shakedown</b> of what's built (no new code; needs a monitor).</li>
-    <li><b>Escalate-from-one-off</b> → open a session seeded with a result.</li>
+    <li><b>Escalate-from-one-off</b> → a session seeded with a result. <b style="color:var(--good)">done</b> ("↪ Chat" on the loom response + quick-action result).</li>
     <li><b>Capability rule + image source</b> — rule + backend <b style="color:var(--good)">done</b>; image-source UI remains.</li>
     <li><b>Audio in / TTS out</b> — the voice loop (fabric does STT + TTS natively). Needs keys.</li>
     <li><b>Contexts &amp; strategies</b> — reusable background + CoT strategies.</li>

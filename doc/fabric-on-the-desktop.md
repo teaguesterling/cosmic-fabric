@@ -86,7 +86,7 @@ Claude/Alpaca shown disabled until a real route exists). ✅ per-artifact dropdo
 
 | fabric | desktop usefulness | how we envision it | status |
 |---|---|---|---|
-| **sessions** (`sessionName`, server-side history) | multi-turn / chain-of-thought without rebuilding context | the **Session** surface — a light chat dialog; **escalate from a one-off** | ✅ surface; escalate ⬜ |
+| **sessions** (`sessionName`, server-side history) | multi-turn / chain-of-thought without rebuilding context | the **Session** surface — a light chat dialog; **escalate from a one-off** | ✅ surface **+ escalate** ("↪ Chat" on a result seeds a session) |
 | session list (`--listsessions`) | resume a past conversation | a session picker | ⬜ |
 
 ### 6 · Context & strategy — advanced shaping
@@ -124,7 +124,9 @@ on Wayland — the hotkey+selection path is the feasible equivalent.*
 ## Roadmap — by value × feasibility
 
 1. **Live shakedown** of what's built (no new code; needs a monitor). 🔶
-2. **Escalate-from-one-off** → open a session seeded with a result. Small.
+2. ~~**Escalate-from-one-off** → open a session seeded with a result.~~ ✅ done —
+   "↪ Chat" on the loom response + the quick-action result launches a session
+   pre-seeded with the result.
 3. **Capability rule + image source** (§2 capabilities + §3 image) — the rule that
    justifies instantiations; needs a vision model prototyped. 🔬
 4. **Audio in / TTS out** (§3 audio + §4 TTS) — the voice loop; fabric does STT
