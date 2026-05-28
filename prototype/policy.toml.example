@@ -32,6 +32,31 @@ warn_below_gpu = 99   # notify if an Ollama run lands below this % on the GPU (s
 include = ["scribe-*"]
 exclude = []
 
+# Named model instantiations (model + deployment params). `default`/per-pattern
+# reference one via `use = "model"` (its default variant) or `use = "model/variant"`.
+# Both models and variants carry free-form `categories`. Edit in Workbench → Models.
+[models.qwen3]
+vendor = "Ollama"
+model = "qwen3:14b-iq4xs"
+capabilities = ["text"]
+categories = ["local"]
+default = "fast"
+  [models.qwen3.variants.fast]
+  ctx = 2048
+  thinking = "off"
+  temperature = 0.2
+  categories = ["quick"]
+  [models.qwen3.variants.deep]
+  ctx = 16384
+  thinking = "off"
+  categories = ["thorough"]
+
+[models.sonnet]
+vendor = "Anthropic"
+model = "claude-sonnet-4-6"
+capabilities = ["text", "vision"]
+categories = ["cloud", "deep"]
+
 [patterns]
 # Most text verbs run local on iq4xs (the default). Overrides:
 scribe-visualize = { model = "claude-sonnet-4-6", vendor = "Anthropic", extra = [] }  # needs tool execution

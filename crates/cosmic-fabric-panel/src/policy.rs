@@ -10,20 +10,60 @@ pub fn path() -> PathBuf {
     PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".config/cosmic-fabric/policy.toml")
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ModelPick {
-    pub model: String,
+/// A deployment instantiation of a model: params that override/extend the base.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Variant {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ctx: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extra: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub categories: Vec<String>,
+}
+
+/// A base model (vendor + model + classification), with named deployment
+/// variants. `default` names the variant `use = "model"` resolves to.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Model {
     pub vendor: String,
-    #[serde(default)]
+    pub model: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub categories: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub variants: BTreeMap<String, Variant>,
+}
+
+/// What `default` / a pattern uses: a named `use = "model[/variant]"`, or a
+/// legacy inline `model`/`vendor` (transition-read, treated as anonymous).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Assignment {
+    #[serde(rename = "use", default, skip_serializing_if = "Option::is_none")]
+    pub use_: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vendor: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extra: Vec<String>,
 }
 
-impl Default for ModelPick {
-    fn default() -> Self {
-        Self {
-            model: "qwen3:14b-iq4xs".into(),
-            vendor: "Ollama".into(),
-            extra: vec!["--thinking=off".into(), "--suppress-think".into()],
+impl Assignment {
+    /// A short label of what this assignment points at, for display.
+    pub fn label(&self) -> String {
+        if let Some(u) = &self.use_ {
+            u.clone()
+        } else if let Some(m) = &self.model {
+            format!("{m} (inline)")
+        } else {
+            "default".into()
         }
     }
 }
@@ -84,15 +124,17 @@ pub fn glob_match(pat: &str, text: &str) -> bool {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Policy {
     #[serde(default)]
-    pub default: ModelPick,
+    pub default: Assignment,
     #[serde(default)]
-    pub patterns: BTreeMap<String, ModelPick>,
+    pub patterns: BTreeMap<String, Assignment>,
     #[serde(default)]
     pub output: OutputCfg,
     #[serde(default)]
     pub ollama: OllamaCfg,
     #[serde(default)]
     pub surface: Surface,
+    #[serde(default)]
+    pub models: BTreeMap<String, Model>,
 }
 
 impl Policy {
@@ -130,6 +172,34 @@ impl Policy {
         let on = self.is_active(name);
         self.set_active(name, !on);
     }
+
+    /// All selectable `use` targets: each model's default (`"model"`) plus every
+    /// `"model/variant"`. For the per-pattern picker.
+    pub fn use_options(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        for (name, m) in &self.models {
+            out.push(name.clone());
+            for v in m.variants.keys() {
+                out.push(format!("{name}/{v}"));
+            }
+        }
+        out
+    }
+
+    /// Reverse index: a `use` target → the assignments that reference it
+    /// ("default" or a pattern name). Powers the Models view's usage display.
+    pub fn usage(&self) -> BTreeMap<String, Vec<String>> {
+        let mut idx: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        if let Some(u) = &self.default.use_ {
+            idx.entry(u.clone()).or_default().push("default".into());
+        }
+        for (pat, a) in &self.patterns {
+            if let Some(u) = &a.use_ {
+                idx.entry(u.clone()).or_default().push(pat.clone());
+            }
+        }
+        idx
+    }
 }
 
 pub fn load() -> Policy {
@@ -156,10 +226,10 @@ mod tests {
     fn real_policy_loads_and_round_trips() {
         let p = load();
         eprintln!(
-            "loaded: default={} ({}), patterns={}, mode={}, ollama={}",
-            p.default.model,
-            p.default.vendor,
+            "loaded: default={} patterns={} models={} mode={} ollama={}",
+            p.default.label(),
             p.patterns.len(),
+            p.models.len(),
             p.output.mode,
             p.ollama.url
         );
@@ -173,8 +243,9 @@ mod tests {
         // Data survives a save/load round-trip.
         let s = toml::to_string_pretty(&p).unwrap();
         let p2: Policy = toml::from_str(&s).unwrap();
-        assert_eq!(p.default.model, p2.default.model);
+        assert_eq!(p.default.label(), p2.default.label());
         assert_eq!(p.patterns.len(), p2.patterns.len());
+        assert_eq!(p.models.len(), p2.models.len());
         assert_eq!(p.output.mode, p2.output.mode);
     }
 

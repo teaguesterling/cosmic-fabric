@@ -23,7 +23,7 @@ use cosmic::{
 use std::collections::BTreeMap;
 
 use crate::daemon::{self, RunResult, Status};
-use crate::policy::{self, ModelPick, Policy};
+use crate::policy::{self, Assignment, Policy};
 
 pub const WORKSPACE_APP_ID: &str = "com.github.teaguesterling.CosmicFabric.Workspace";
 
@@ -86,6 +86,7 @@ fn destinations() -> [DestSpec; 5] {
 pub enum WorkMode {
     Run,
     Library,
+    Models,
 }
 
 pub struct Workspace {
@@ -149,8 +150,7 @@ pub enum Message {
     ToggleActive(String),
     CatalogDone(Result<BTreeMap<String, Vec<String>>, String>),
     LibSelect(String),
-    SetPatternVendor(String, String),
-    SetPatternModel(String, String),
+    SetPatternUse(String, String),
     Retry,
     Clear,
     OpenSettings,
@@ -413,26 +413,16 @@ impl cosmic::Application for Workspace {
                     Some(name)
                 };
             }
-            Message::SetPatternVendor(name, vendor) => {
-                if vendor == DEFAULT_VENDOR {
+            Message::SetPatternUse(name, target) => {
+                if target == DEFAULT_VENDOR {
                     self.policy.patterns.remove(&name); // use the global default
                 } else {
-                    // switching vendor: default to its first model, keep any extra
-                    let model = self
-                        .catalog
-                        .get(&vendor)
-                        .and_then(|ms| ms.first().cloned())
-                        .unwrap_or_default();
-                    let extra = self.policy.patterns.get(&name).map(|p| p.extra.clone()).unwrap_or_default();
-                    self.policy.patterns.insert(name, ModelPick { model, vendor, extra });
+                    self.policy.patterns.insert(
+                        name,
+                        Assignment { use_: Some(target), ..Default::default() },
+                    );
                 }
                 self.persist();
-            }
-            Message::SetPatternModel(name, model) => {
-                if let Some(p) = self.policy.patterns.get_mut(&name) {
-                    p.model = model;
-                    self.persist();
-                }
             }
             Message::Retry => return self.update(Message::Run),
             Message::Clear => {
@@ -467,24 +457,29 @@ impl cosmic::Application for Workspace {
         if let Some(st) = &self.status {
             header = header.push(text::caption(self.status_pill(st)));
         }
-        // mode toggle: Run (the console) ⇄ Library (curation)
-        let mode_run = if self.mode == WorkMode::Run {
-            button::suggested("Run")
-        } else {
-            button::text("Run").on_press(Message::SetMode(WorkMode::Run))
-        };
-        let mode_lib = if self.mode == WorkMode::Library {
-            button::suggested("Library")
-        } else {
-            button::text("Library").on_press(Message::SetMode(WorkMode::Library))
+        // mode toggle: Run (console) ⇄ Library (curate patterns) ⇄ Models (configs)
+        let mode_btn = |label: &'static str, m: WorkMode, cur: WorkMode| {
+            if cur == m {
+                button::suggested(label)
+            } else {
+                button::text(label).on_press(Message::SetMode(m))
+            }
         };
         header = header.push(
-            cosmic::iced::widget::row![mode_run, mode_lib].spacing(2),
+            cosmic::iced::widget::row![
+                mode_btn("Run", WorkMode::Run, self.mode),
+                mode_btn("Library", WorkMode::Library, self.mode),
+                mode_btn("Models", WorkMode::Models, self.mode),
+            ]
+            .spacing(2),
         );
         col = col.push(header);
         col = col.push(divider::horizontal::default());
 
         match self.mode {
+            WorkMode::Models => {
+                col = col.push(self.models_view(&s));
+            }
             WorkMode::Library => {
                 col = col.push(self.library_view(&s));
             }
@@ -604,8 +599,8 @@ impl Workspace {
                 .policy
                 .patterns
                 .get(name)
-                .map(|p| format!("{} ({})", p.model, p.vendor))
-                .unwrap_or_else(|| "default model".into());
+                .map(|a| a.label())
+                .unwrap_or_else(|| "default".into());
             let row = cosmic::iced::widget::row![
                 star,
                 button::text(pretty(name))
@@ -640,49 +635,110 @@ impl Workspace {
         col.into()
     }
 
-    /// Per-pattern config panel (model + vendor), driven by the live catalog.
+    /// Per-pattern config: which model instantiation this pattern uses. Options
+    /// are "Default" (the global default) + each model[/variant] from the Models
+    /// view. Defining the model+params happens once, in Models.
     fn pattern_config(&self, s: &cosmic::cosmic_theme::Spacing, name: &str) -> Element<'_, Message> {
-        let pick = self.policy.patterns.get(name);
-
-        // vendor dropdown: Default (= use global) + every vendor in the catalog.
-        let mut vendors: Vec<String> = vec![DEFAULT_VENDOR.to_string()];
-        vendors.extend(self.catalog.keys().cloned());
-        let cur_vendor = pick.map(|p| p.vendor.clone()).unwrap_or_else(|| DEFAULT_VENDOR.into());
-        let v_idx = vendors.iter().position(|v| *v == cur_vendor);
-        let nm_v = name.to_string();
-        let vendors_for_cb = vendors.clone();
-        let vendor_dd = dropdown(vendors, v_idx, move |i| {
-            Message::SetPatternVendor(nm_v.clone(), vendors_for_cb[i].clone())
+        let mut opts: Vec<String> = vec![DEFAULT_VENDOR.to_string()];
+        opts.extend(self.policy.use_options());
+        let cur = self.policy.patterns.get(name).and_then(|a| a.use_.clone());
+        let idx = match &cur {
+            Some(u) => opts.iter().position(|o| o == u),
+            None => Some(0), // "Default"
+        };
+        let nm = name.to_string();
+        let opts_cb = opts.clone();
+        let use_dd = dropdown(opts, idx, move |i| {
+            Message::SetPatternUse(nm.clone(), opts_cb[i].clone())
         });
 
-        let mut panel = Column::new()
-            .spacing(s.space_xxs)
-            .push(text::heading(pretty(name)))
-            .push(
-                cosmic::iced::widget::row![text::body("Vendor").width(Length::Fixed(70.0)), vendor_dd]
-                    .spacing(s.space_xs)
-                    .align_y(Alignment::Center),
-            );
-
-        // model dropdown: only when a concrete vendor is chosen.
-        if let Some(models) = self.catalog.get(&cur_vendor) {
-            let cur_model = pick.map(|p| p.model.clone()).unwrap_or_default();
-            let m_idx = models.iter().position(|m| *m == cur_model);
-            let nm_m = name.to_string();
-            let models_for_cb = models.clone();
-            let model_dd = dropdown(models.clone(), m_idx, move |i| {
-                Message::SetPatternModel(nm_m.clone(), models_for_cb[i].clone())
-            });
-            panel = panel.push(
-                cosmic::iced::widget::row![text::body("Model").width(Length::Fixed(70.0)), model_dd]
-                    .spacing(s.space_xs)
-                    .align_y(Alignment::Center),
-            );
+        let body: Element<_> = if self.policy.models.is_empty() {
+            text::caption("No models defined yet — add them in the Models tab.").into()
         } else {
-            panel = panel.push(text::caption("Uses the global default model."));
+            cosmic::iced::widget::row![text::body("Use").width(Length::Fixed(50.0)), use_dd]
+                .spacing(s.space_xs)
+                .align_y(Alignment::Center)
+                .into()
+        };
+
+        container(Column::new().spacing(s.space_xxs).push(text::heading(pretty(name))).push(body))
+            .padding(s.space_xs)
+            .class(theme::Container::Card)
+            .into()
+    }
+
+    /// The Models view: every model instantiation, its variants, categories, and
+    /// who uses it — the legible inventory ("easier to reason about").
+    fn models_view(&self, s: &cosmic::cosmic_theme::Spacing) -> Element<'_, Message> {
+        let usage = self.policy.usage();
+        let chips = |items: &[String]| -> String {
+            if items.is_empty() { String::new() } else { format!("  [{}]", items.join(", ")) }
+        };
+
+        let mut list = Column::new().spacing(s.space_s);
+        if self.policy.models.is_empty() {
+            list = list.push(text::body(
+                "No model instantiations defined yet. Add a [models.<name>] block in \
+                 policy.toml (vendor, model, optional variants); a visual editor is coming. \
+                 Patterns fall back to the global default until then.",
+            ));
+        }
+        for (name, m) in &self.policy.models {
+            let mut card = Column::new().spacing(s.space_xxs);
+            // header: name · model · vendor
+            card = card.push(
+                cosmic::iced::widget::row![
+                    text::heading(name.clone()),
+                    cosmic::widget::Space::new().width(Length::Fill),
+                    text::caption(format!("{} \u{00b7} {}", m.model, m.vendor)),
+                ]
+                .align_y(Alignment::Center),
+            );
+            let class_line = format!(
+                "capabilities{}   categories{}",
+                if m.capabilities.is_empty() { ": —".into() } else { chips(&m.capabilities) },
+                if m.categories.is_empty() { ": —".into() } else { chips(&m.categories) },
+            );
+            card = card.push(text::caption(class_line));
+            // base usage (use = "model")
+            if let Some(users) = usage.get(name) {
+                card = card.push(text::caption(format!("used by: {}", users.join(", "))));
+            }
+            // variants
+            for (vname, v) in &m.variants {
+                let is_default = m.default.as_deref() == Some(vname.as_str());
+                let mut parts: Vec<String> = Vec::new();
+                if let Some(c) = v.ctx { parts.push(format!("ctx {c}")); }
+                if let Some(t) = &v.thinking { parts.push(format!("think {t}")); }
+                if let Some(t) = v.temperature { parts.push(format!("temp {t}")); }
+                let star = if is_default { "\u{2605} " } else { "  " };
+                let key = format!("{name}/{vname}");
+                let used = usage.get(&key).map(|u| format!("  \u{2190} {}", u.join(", "))).unwrap_or_default();
+                card = card.push(text::caption(format!(
+                    "{star}{vname}: {}{}{}",
+                    if parts.is_empty() { "base params".into() } else { parts.join(", ") },
+                    chips(&v.categories),
+                    used,
+                )));
+            }
+            list = list.push(container(card).padding(s.space_xs).class(theme::Container::Card));
         }
 
-        container(panel).padding(s.space_xs).class(theme::Container::Card).into()
+        let nvendors = self.catalog.len();
+        let nmodels: usize = self.catalog.values().map(|v| v.len()).sum();
+        Column::new()
+            .spacing(s.space_xs)
+            .push(
+                cosmic::iced::widget::row![
+                    text::heading("Models"),
+                    cosmic::widget::Space::new().width(Length::Fill),
+                    text::caption(format!("{nmodels} models across {nvendors} vendors available")),
+                ]
+                .align_y(Alignment::Center),
+            )
+            .push(text::caption("★ = default variant. Define/edit in policy.toml for now."))
+            .push(scrollable(list).height(Length::Fixed(440.0)))
+            .into()
     }
 
     fn source_section(&self, s: &cosmic::cosmic_theme::Spacing) -> Element<'_, Message> {
