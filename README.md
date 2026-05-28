@@ -5,16 +5,15 @@ deployment. Not one app — a small bundle of thin surfaces that keep one fabric
 deployment's *configuration* coherent: a launcher plugin, a panel applet, a
 settings window, and a daemon that ties them together.
 
-> **Start here:** [`doc/getting-started.md`](doc/getting-started.md) — install + `fabric --setup` walkthrough.
 > **Vision & feature map:** [`doc/fabric-on-the-desktop.md`](doc/fabric-on-the-desktop.md)
-> ([interactive HTML](doc/fabric-on-the-desktop.html)) — every fabric capability, its desktop use, and status.
+> — every fabric capability, its desktop usefulness, how we envision it, and status.
 
 **Standalone from [cosmic-goo](https://github.com/…/cosmic-goo).** cosmic-fabric and
 goo are siblings: both speak to fabric, neither depends on the other. The launcher
 plugin uses pop-launcher's protocol — the same surface a future goo meta-plugin
 would target — with zero goo dependency.
 
-📖 **[User manual](doc/manual.md)** · 🏗 **[Design & roadmap](doc/design.md)**
+🚀 **[Getting started](doc/getting-started.md)** · 📖 **[User manual](doc/manual.md)** · 🏗 **[Design & roadmap](doc/design.md)**
 
 ## Quickstart
 

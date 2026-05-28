@@ -1,216 +1,184 @@
 # Getting started with cosmic-fabric
 
-A complete walkthrough: install [fabric](https://github.com/danielmiessler/fabric),
-configure its vendors/keys with `fabric --setup`, install cosmic-fabric, wire up the
-surfaces, and make it yours. No sudo — everything is user-level (`~/.local`).
+A complete walkthrough: install the engine, run `fabric --setup` properly
+(vendors, API keys, patterns, strategies), install the COSMIC surfaces, configure
+your profile, and confirm each capability. Budget ~20 minutes.
 
-> Already know fabric? Jump to [§4 Install cosmic-fabric](#4-install-cosmic-fabric).
-> What each capability needs is in [§8 Capabilities & keys](#8-capabilities--keys-cheat-sheet).
+> Already know fabric? Jump to [3 · Install the surfaces](#3--install-the-cosmic-fabric-surfaces).
+> Reference: [`fabric-on-the-desktop.md`](fabric-on-the-desktop.md) (what each feature
+> is + status), [`manual.md`](manual.md) (day-to-day usage).
 
-## 0 · The pieces
+## The pieces (what you're standing up)
 
 ```
-fabric (--serve)        the engine: patterns, models, sessions, multimodal
-  ├── Ollama            local models (private, free)
-  └── Anthropic/OpenAI/Gemini/…   cloud models (keys)
-cosmic-fabricd          the daemon — owns fabric, serves one unix socket ("one channel")
-  ├── panel applet      kit: status + quick-run            ┐
-  ├── launcher plugin   kit: Super → "fab <pattern>"        │ thin socket clients
-  ├── quick-action      kit: hotkey on the selection        │ sharing one profile
-  ├── workspace (loom)  power + config (Library, Models)     │ (policy.toml)
-  └── session           multi-turn chat                     ┘
+  you ──▶ surfaces (loom · kit · session)
+              │  unix socket (line-JSON)
+              ▼
+        cosmic-fabricd  ──REST──▶  fabric --serve  ──▶  Ollama (local) / Anthropic / …
+        (owns the deployment)        (the engine)        (the models)
 ```
 
-One config file — `~/.config/cosmic-fabric/policy.toml` (the **profile**) — is read
-by every surface. fabric's own config (vendors/keys) lives in `~/.config/fabric/.env`.
+- **fabric** — the engine (patterns + model routing). You configure it once.
+- **Ollama** — local models (text + vision), no API cost.
+- **cosmic-fabricd** — the daemon that owns the fabric deployment; every surface
+  is a thin client of its socket.
+- **surfaces** — the panel/launcher/quick-action (kit), the workbench (loom), the
+  chat (session).
 
 ## 1 · Prerequisites
 
-- **COSMIC desktop** (Pop!_OS COSMIC or another COSMIC session).
-- **fabric** — `go install github.com/danielmiessler/fabric/cmd/fabric@latest`
-  (or a release binary). Confirm: `fabric --version`.
-- **Ollama** (for local models; recommended) — https://ollama.com . Confirm:
-  `ollama --version`.
-- **Rust + just** (to build the panel applet) — `rustup`, then `cargo install just`.
-- **wl-clipboard** (`wl-copy`/`wl-paste`) and **libnotify** (`notify-send`) —
-  usually present on COSMIC; `apt install wl-clipboard libnotify-bin` if not.
+- **COSMIC desktop** (this is a COSMIC-native bundle).
+- **fabric** on `PATH` — `go install github.com/danielmiessler/fabric/cmd/fabric@latest`
+  (or a release binary). Check: `fabric --version`.
+- **Ollama** running, with at least one text model (e.g. `qwen3:14b-iq4xs`) and,
+  for vision, `ollama pull llama3.2-vision`.
+- **wl-clipboard** (`wl-copy`/`wl-paste`) — clipboard + selection.
+- **Rust** (stable) to build the panel, and `just`.
 
-## 2 · Configure fabric — `fabric --setup` (the important part)
+## 2 · Configure fabric — `fabric --setup`
 
-`fabric --setup` is an interactive menu. Run it and work through:
+This is the part people skip and regret. `fabric --setup` (alias `fabric -S`) is
+an **interactive** walk through *every reconfigurable part* of fabric. Run it:
+
+```sh
+fabric --setup
+```
+
+Work through these (you can re-run `--setup` any time to add more):
 
 ### a. Vendors & API keys
-Pick each vendor you want and paste its key. What each unlocks:
+For each provider you want, select it and paste its key. What each unlocks:
 
-| vendor | get a key at | unlocks |
+| vendor | key needed? | unlocks |
 |---|---|---|
-| **Ollama** (local) | — (no key; just the server) | local text **and vision** (e.g. `llama3.2-vision`), private + free |
-| **Anthropic** | console.anthropic.com | claude (strong text; **vision**-capable) |
-| **OpenAI** | platform.openai.com/api-keys | GPT models; **STT/transcription** (whisper); **image generation** |
-| **Gemini** | aistudio.google.com/apikey (free tier) | Gemini models; **TTS**; image generation |
+| **Ollama** | no (local) | local text **and vision** (`llama3.2-vision`), zero cost — set the server URL (default `http://localhost:11434`) |
+| **Anthropic** | yes | Claude (text **+ vision**) |
+| **OpenAI** | yes | **STT/transcription** (`whisper-1`, `gpt-4o-transcribe`) + **image generation** |
+| **Gemini** | yes (free at `aistudio.google.com/apikey`) | **TTS** + **image generation** + Google models |
+| OpenRouter / Groq / Mistral / … | yes | more models (optional) |
 
-> **"Antigravity" is not a fabric vendor** — it's Google's agentic IDE, not a model
-> API. For Google models, choose **Gemini**.
+> **"Antigravity" is not a fabric vendor** — it's Google's agentic IDE, not a
+> model API. For Google models, add **Gemini**.
 
-Keys are written to `~/.config/fabric/.env`. **Never commit that file**; never paste a
-key into a chat or a shell command that gets logged.
+### b. Defaults
+Set your **default model + vendor** (e.g. Ollama / `qwen3:14b-iq4xs` for cheap,
+private, local). Change later with `fabric -d` (`--changeDefaultModel`, interactive)
+or per-run with `-m <model> -V <vendor>`.
 
-### b. Default vendor & model
-Set a default (e.g. `Ollama` / `qwen3:14b-iq4xs`). Pull it first (see §3).
+### c. Patterns & strategies
+`--setup` offers to fetch the **patterns** repo (the verbs) and the **strategies**
+repo (CoT-style prompt modifiers). Accept both. Update patterns later with
+`fabric -U` (`--updatepatterns`).
 
-### c. Patterns (the verbs)
-fabric fetches the **upstream pattern set** from a git repo via the pattern loader
-(the default, ~254 patterns):
+### d. Optional extras
+YouTube data API (richer `-y`), Jina (`-u` web scrape works **keyless**, but a key
+raises rate limits), etc.
 
-```ini
-# ~/.config/fabric/.env
-PATTERNS_LOADER_GIT_REPO_URL=https://github.com/danielmiessler/fabric.git
-PATTERNS_LOADER_GIT_REPO_PATTERNS_FOLDER=data/patterns
-```
+### Where it all lands
+- `~/.config/fabric/.env` — vendor keys + defaults *(never commit this)*.
+- `~/.config/fabric/patterns/` — the pattern library.
+- `~/.config/fabric/strategies/` — strategies (after setup).
 
-`fabric --setup` fetches them; confirm with `fabric --listpatterns`. **Custom packs**
-(like the `scribe-*` set) are just folders you drop into `~/.config/fabric/patterns/`
-— each pattern is a directory containing a `system.md`. They appear alongside the
-upstream ones (here: 11 `scribe-*` + ~254 upstream = 265 total). You then **curate**
-which of those you actually surface, in the Library (§6).
-
-### d. Strategies (optional)
-`fabric --setup` also fetches prompt **strategies** (CoT etc.) via
-`PROMPT_STRATEGIES_GIT_REPO_URL`. List them: `fabric --liststrategies`.
-
-### e. Verify
+### Verify
 ```sh
-fabric --serve &                       # REST on :8080 (cosmic-fabricd starts this for you too)
-curl -s localhost:8080/patterns/names | head -c 200
-curl -s localhost:8080/models/names    | python3 -m json.tool | head
-fabric --listvendors                   # vendors you've configured show models
+fabric --listvendors      # vendors fabric knows
+fabric -L                 # models actually reachable (i.e. keyed)
+fabric --liststrategies   # should be non-empty after setup
+fabric --serve            # start the REST API the daemon talks to (port 8080)
 ```
 
-## 3 · Local models (Ollama)
+If a vendor isn't in `fabric -L`, its key isn't set — re-run `fabric --setup`.
+
+## 3 · Install the cosmic-fabric surfaces
 
 ```sh
-ollama pull qwen3:14b-iq4xs       # text workhorse (~8 GB on an 11 GB GPU)
-ollama pull llama3.2-vision       # local vision (~7.8 GB) — powers image runs
+# the panel binary (loom + kit popup + session + quick + settings)
+cd crates && just install          # release → ~/.local/bin + .desktop + icon
+#   or: just install-debug         # faster build, larger binary
+
+# the daemon + launcher plugin (Python; language-agnostic)
+#   the daemon lives at ~/.local/share/cosmic-fabric/cosmic-fabricd
+#   the launcher auto-spawns it; or run it once: cosmic-fabricd &
 ```
 
-Tips for an 11 GB GPU (e.g. RTX 2080 Ti):
-- A q8 KV cache lowers footprint — set `OLLAMA_KV_CACHE_TYPE=q8_0` (systemd override).
-- cosmic-fabric **auto-sizes context** per input (`pick_ctx`), so short inputs stay
-  fully on the GPU and long ones (web pages) grow instead of truncating.
-- Under desktop memory pressure a model may spill to CPU (the panel shows a
-  `⚠ GPU%` badge); it still runs.
+Then:
+- **Panel applet** — cosmic-settings → Panel (or Dock) → Configure applets → add
+  **Fabric**. (After a rebuild: `pkill cosmic-fabric-panel`; the panel respawns it.)
+- **Launcher** — the pop-launcher plugin is picked up automatically; Super → type a
+  verb.
+- **Quick-action shortcut** — bind a key to the selection grid:
+  cosmic-settings → Keyboard → Shortcuts → **Custom** → add command
+  `cosmic-fabric-panel quick` (e.g. **Super+Shift+F**). *(May need a logout/login
+  to take effect.)*
 
-## 4 · Install cosmic-fabric
+## 4 · Configure your profile
 
-```sh
-git clone https://github.com/teaguesterling/cosmic-fabric
-cd cosmic-fabric
+Two equivalent ways — the file, or the GUI.
 
-cd src && ./install.sh && cd ..  # daemon + shared core → ~/.local/share/cosmic-fabric/,
-                                 # launcher plugin → ~/.local/share/pop-launcher/plugins/,
-                                 # seeds ~/.config/cosmic-fabric/policy.toml if absent.
-                                 # Files are COPIED — re-run install.sh after a `git pull`.
-pkill cosmic-launcher            # reload pop-launcher so it sees the plugin
+**The file:** `~/.config/cosmic-fabric/policy.toml`
+```toml
+[surface]                          # which patterns the quick surfaces show
+include = ["scribe-*"]             # globs (* / ?) or exact names; empty = all
+exclude = []
 
-cd crates && just install        # the panel applet (release build). Or: just install-debug
+[models.qwen3]                     # a named model instantiation
+vendor = "Ollama"
+model  = "qwen3:14b-iq4xs"
+capabilities = ["text"]
+categories = ["local"]
+default = "fast"
+  [models.qwen3.variants.fast]  ctx = 2048 ; thinking = "off"
+  [models.qwen3.variants.deep]  ctx = 16384
+
+[models.llama-vision]              # a vision model → the capability rule uses it
+vendor = "Ollama" ; model = "llama3.2-vision:latest"
+capabilities = ["text", "vision"]
+
+[default] use = "qwen3/fast"       # or legacy inline: model = "…", vendor = "…"
+[patterns.scribe-visualize] use = "sonnet"
+
+[output] mode = "notify"           # notify | dialog | edit | clipboard | panel
+[ollama] url = "http://localhost:11434" ; warn_below_gpu = 99
 ```
 
-The daemon auto-starts the first time you use the launcher/panel (and it ensures
-`fabric --serve` is up). To start it by hand:
+**The GUI (recommended):** open the workbench — `cosmic-fabric-panel window` —
+- **Library**: search all patterns, ★ the ones you want (writes `[surface]`),
+  route each to a model.
+- **Models**: define instantiations + variants, categories, default variant.
 
-```sh
-python3 ~/.local/share/cosmic-fabric/cosmic-fabricd &   # idempotent — won't steal a live socket
-```
+The daemon re-reads `policy.toml` per run, so edits take effect immediately.
 
-## 5 · Wire the surfaces
+## 5 · Use it
 
-- **Panel applet** (status + quick-run): `cosmic-settings` → **Panel** (or Dock) →
-  **Configure applets** → add **"Fabric"**. (`just hint` prints this.) After a
-  rebuild, reload with `pkill cosmic-fabric-panel` (the panel respawns it).
-- **Launcher**: already registered. Super → type `fab summarize` (acts on the current
-  selection). `!` in the launcher shows *all* patterns, not just your active set.
-- **Quick-action** (hotkey on the selection): `cosmic-settings` → **Keyboard** →
-  **Shortcuts** → **Custom** → add a command shortcut running
-  `cosmic-fabric-panel quick`, bound to e.g. **Super+Shift+F**. (May need a
-  logout/login to take effect.)
-- **Workspace (loom)**: `cosmic-fabric-panel window`, or **"Open workspace…"** in the
-  popup.
-- **Session (chat)**: `cosmic-fabric-panel session`, or **"Chat…"** in the popup.
+- **Kit (fast):** panel popup (quick-run on the clipboard) · launcher (Super →
+  type) · **quick-action** (Super+Shift+F on highlighted text → grid → result).
+- **Loom (power/config):** `cosmic-fabric-panel window` — Run a source→pattern→
+  result, curate in Library, configure in Models.
+- **Session (chat):** `cosmic-fabric-panel session` — multi-turn.
 
-## 6 · Make it yours (the profile)
+## 6 · Capability cheat-sheet (what works, what needs a key)
 
-Everything below writes `~/.config/cosmic-fabric/policy.toml`, which every surface reads.
+| capability | needs | how it surfaces |
+|---|---|---|
+| text patterns | Ollama or any keyed vendor | everywhere |
+| **vision** (describe/OCR an image) | **nothing extra** — local `llama3.2-vision` or Anthropic | image run; the **capability rule** auto-picks a vision model |
+| **web / URL** (summarize a page) | nothing (keyless Jina) | URL source |
+| **audio / STT** | **OpenAI key** | (after key) `--transcribe-file` |
+| **image generation** | **OpenAI or Gemini key** | (after key) image-gen pattern |
+| **TTS** (read aloud) | **Gemini key** | (after key) speak destination |
 
-- **Curate patterns** — Workspace → **Library**: search all patterns, ★ the ones you
-  want. Your active set is what the popup/launcher/quick-action show. (Under the hood:
-  `[surface]` include/exclude globs — `scribe-*` is just one pack.)
-- **Define models** — Workspace → **Models**: create **instantiations** (a model +
-  deployment params), with **variants** (`qwen3/fast` @ctx 2048, `qwen3/deep` @16384)
-  and a default variant. Tag them with **categories** and **capabilities**. Set the
-  global default and per-pattern model. Example:
+## 7 · Troubleshooting
 
-  ```toml
-  [models.qwen3]
-  vendor = "Ollama"; model = "qwen3:14b-iq4xs"
-  capabilities = ["text"]; categories = ["local"]; default = "fast"
-    [models.qwen3.variants.fast]  # ctx 2048, quick
-    ctx = 2048; thinking = "off"
-    [models.qwen3.variants.deep]  # ctx 16384, thorough
-    ctx = 16384
-
-  [models.llama-vision]
-  vendor = "Ollama"; model = "llama3.2-vision:latest"
-  capabilities = ["text", "vision"]   # the capability rule picks this for image runs
-
-  [default] use = "qwen3/fast"
-  [patterns.scribe-visualize] use = "sonnet"
-  ```
-
-- **Capability rule**: tag a model `capabilities = ["vision"]` and image runs
-  auto-pick it (prefers local). No manual model-switching for vision.
-
-## 7 · First runs
-
-- **Kit · popup** — copy some text, click the Fabric applet, pick a pattern → result
-  streams + a notification (and it's on your clipboard).
-- **Kit · launcher** — highlight text, Super → `fab summarize` → Enter.
-- **Kit · quick-action** — highlight text, **Super+Shift+F** → pick a pattern → inline
-  result, copied.
-- **Loom · workspace** — pick a Source (clipboard / type / file / **URL** → Fetch),
-  pick a pattern, the prompt assembles, **Run**, then route with the send-to menus.
-- **Session** — open Chat, talk; fabric keeps the conversation history.
-- **Vision** — once a vision model is configured (e.g. `llama3.2-vision`), image runs
-  auto-select it (UI image-source pane is on the roadmap; the daemon path works today).
-
-## 8 · Capabilities & keys cheat-sheet
-
-| capability | works with |
-|---|---|
-| text patterns | **Ollama** (local) or any cloud vendor |
-| **vision** (describe/OCR an image) | **local** `llama3.2-vision` (Ollama) — *or* Anthropic/OpenAI/Gemini |
-| **web/URL** (summarize a page) | built in (keyless Jina reader; no key needed) |
-| **STT** (transcribe audio) | **OpenAI** key (whisper / gpt-4o-transcribe) |
-| **image generation** | **OpenAI** or **Gemini** key |
-| **TTS** (read aloud) | **Gemini** key |
-
-## 9 · Troubleshooting
-
-- **Daemon not reachable** — `python3 ~/.local/share/cosmic-fabric/cosmic-fabricd &`; check `~/.cache/cosmic-fabric/daemon.log`.
-- **fabric not serving** — the daemon starts `fabric --serve`; or run it yourself and
-  `curl localhost:8080/patterns/names`.
-- **No patterns in the popup** — curate an active set in the Library, or confirm the
-  pattern loader (`fabric --listpatterns`).
-- **Quick-action key doesn't fire** — log out/in; verify under Settings → Keyboard →
-  Shortcuts → Custom.
-- **Result spilled to CPU** (`⚠ GPU%`) — desktop memory pressure; close VRAM hogs, or
-  use a smaller ctx variant / a cloud model for big inputs.
-- **Applet changes not showing** — `pkill cosmic-fabric-panel` to reload.
-
-## 10 · Uninstall
-
-```sh
-cd crates && just uninstall                            # panel binary + .desktop + icon
-rm -rf ~/.local/share/cosmic-fabric                    # daemon + core
-rm -rf ~/.local/share/pop-launcher/plugins/cosmic-fabric   # launcher plugin
-# optional: rm -rf ~/.config/cosmic-fabric ~/.cache/cosmic-fabric
-```
+- **"daemon not reachable"** — start it: `cosmic-fabricd &` (check
+  `~/.cache/cosmic-fabric/daemon.log`). Only one should run; it refuses to steal a
+  live socket.
+- **No patterns in the popup** — your `[surface].include` matched nothing; widen it
+  or curate in the Library. `!` in the launcher force-shows all.
+- **Result spilled to CPU** (GPU% < 100, ⚠ badge) — the model + context exceeded
+  VRAM; use a smaller variant (lower `ctx`) or a cloud instantiation. The daemon
+  auto-sizes context for Ollama runs.
+- **Quick-action key does nothing** — log out/in; verify under Settings → Keyboard
+  → Shortcuts → Custom.
+- **A vendor's models are missing** — its key isn't set; `fabric --setup`.
+- **Settings/model changes not taking** — the daemon re-reads per run; for the
+  panel's curated list, reopen the popup.
