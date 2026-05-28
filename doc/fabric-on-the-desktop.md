@@ -47,7 +47,7 @@ Curation: which patterns are "yours" is **include/exclude globs** over names
 | per-pattern **model/vendor** | the right tool per verb (local summarize, cloud visualize) | assign each pattern a **named instantiation** | ✅ Models editor |
 | **deployment params** (ctx, thinking, temperature) | right-size the KV cache; toggle reasoning; tune creativity | **model → variants** (`qwen3/fast` @2048, `qwen3/deep` @16384), default variant | ✅ two-level instantiations + editor |
 | **`modelContextLength`** | stop short inputs over-allocating; let long inputs (web pages) grow | auto-size by input (`pick_ctx`) when a variant has no explicit ctx | ✅ |
-| **capabilities** (text/vision/…) | a vision pattern *can't* run on a text-only model — a hard constraint | tag instantiations; a **capability rule** auto-picks a capable one | 🔶 stored; rule ⬜ 🔬 |
+| **capabilities** (text/vision/…) | a vision pattern *can't* run on a text-only model — a hard constraint | tag instantiations; a **capability rule** auto-picks a capable one | 🔶 stored; rule ⬜ (vision verified local — see Prototyping results) |
 | ChatOptions **`search`** (model-side web search) | "answer using the web" without scraping | a per-run/instantiation toggle | ⬜ |
 
 ### 3 · Inputs / sources — what you act on
@@ -59,8 +59,8 @@ Curation: which patterns are "yours" is **include/exclude globs** over names
 | file | run a pattern over a document | path field now; native picker later | 🔶 path-paste; picker ⬜ |
 | **URL / web** (`--scrape_url` Jina, `--readability`) | "summarize this page" from a link | daemon fetches → markdown → feeds the prompt (keyless Jina, no REST dep) | ✅ |
 | **YouTube** (`-y` transcript/comments) | "summarize this talk" | a URL-source variant (transcript → prompt) | ⬜ |
-| **audio** (`--transcribe-file`, STT) | voice notes; "what did this meeting cover" | source → transcribe → prompt; front half of the voice loop | ⬜ 🔬 |
-| **image** (`-a` attachment, vision) | "describe / extract text from this image" | image source; **requires a vision model** (capability rule) | ⬜ 🔬 |
+| **audio** (`--transcribe-file`, STT) | voice notes; "what did this meeting cover" | source → transcribe → prompt; front half of the voice loop | ⬜ needs OpenAI key (STT is OpenAI-only) |
+| **image** (`-a` attachment, vision) | "describe / extract text from this image" | image source; **requires a vision model** (capability rule) | 🔶 **vision works locally** (llama3.2-vision) / claude; source UI ⬜ |
 | Spotify (`--spotify`) | podcast metadata | niche; later | ⬜ |
 
 The source is **polymorphic**: the input pane adapts per origin (URL gets a
@@ -155,6 +155,26 @@ quick-action (Super+Shift+F)            session (chat)              Models (loom
 source** states (URL fetch, image+vision-required, audio); the **image-gen
 response**; a **contexts/strategies** config panel. (Several already exist in
 `panel-mockup.html`.)
+
+## Prototyping results & API availability (2026-05-28)
+
+What the box can actually do, tested on-device:
+
+| capability | verdict | needs |
+|---|---|---|
+| **Vision** | ✅ **works, locally** | `llama3.2-vision:latest` (7.8 GB, fits the 11 GB GPU; accurately described a screenshot via `fabric -a`). Also available via **Anthropic** claude (vision-capable, already keyed). **Roadmap item 3 (image source + capability rule) can proceed now.** |
+| **Audio / STT** | ⬜ blocked on a key | fabric's transcription models are **OpenAI-only** (`whisper-1`, `gpt-4o-transcribe`) — no local option. Needs an **OpenAI key**. |
+| **Image generation** | ⬜ blocked on a key | needs **OpenAI** (`gpt-image`/dall-e) or **Gemini**. |
+| **TTS** | ⬜ blocked on a key | Gemini voices listed, but needs a **Gemini key**. |
+
+**Configured vendors:** Anthropic (keyed) + Ollama (local). **In fabric's
+registry but unkeyed:** Gemini, OpenAI (+ ~26 more). To unlock the rest:
+**OpenAI** → STT + image-gen; **Gemini** → TTS + image-gen + Google models.
+Note: **"Antigravity" is not a fabric vendor** — it's Google's agentic IDE, not a
+model API. For Google models the fabric vendor is **Gemini** (add a Gemini key).
+
+So vision (item 3) is unblocked **today and locally**; the voice loop (item 4) and
+image-gen wait on an OpenAI and/or Gemini key.
 
 ---
 
