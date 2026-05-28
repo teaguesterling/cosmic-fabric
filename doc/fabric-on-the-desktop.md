@@ -13,7 +13,8 @@ It's both the vision and the roadmap.
 
 One daemon (`cosmic-fabricd`) owns the fabric deployment — the **one channel**;
 everything else is a thin socket client. One **profile** (`policy.toml`) is the
-shared config every surface reads. Three UI surfaces:
+shared config every surface reads. Three UI surfaces — and the socket they all
+sit on is itself a (programmatic) surface; see the goo appendix. The three UIs:
 
 - **Loom** 🧵 — the Workbench (`cosmic-fabric-panel window`): the power + config
   surface. Run/inspect, **Library** (curate which patterns are yours), **Models**
@@ -154,3 +155,48 @@ quick-action (Super+Shift+F)            session (chat)              Models (loom
 source** states (URL fetch, image+vision-required, audio); the **image-gen
 response**; a **contexts/strategies** config panel. (Several already exist in
 `panel-mockup.html`.)
+
+---
+
+## Appendix — goo (isolated; aspirational, out of scope for now)
+
+> Kept deliberately separate from the desktop product above. **goo is a sibling
+> router, not part of cosmic-fabric** — cosmic-fabric ships fully without it and
+> depends on nothing goo-specific. Full design + friction list:
+> `cosmic-goo-integration.md`.
+
+### The unpublicized 4th surface: the daemon socket
+
+The three UI surfaces are all clients of one thing — the **`cosmic-fabricd` unix
+socket** (line-delimited JSON at `$XDG_RUNTIME_DIR/cosmic-fabric.sock`). That
+socket *is* a surface: the **programmatic / headless** one. It's the seam any
+external automation — goo, a script, an MCP bridge — would touch, exactly as the
+UIs do. There's no special bridge to build: speak the protocol and you're a
+client. We just haven't publicized it as a surface.
+
+**The socket API (the surface itself):**
+
+| op | does |
+|---|---|
+| `ping` / `status` | health; serve up + loaded model + GPU% |
+| `patterns` / `models` / `surface` | discovery: all patterns; vendor→models; the curated active-set |
+| `assemble` | render a pattern's prompt (system + input, vars) — **no model run** |
+| `run` (+ `stream`, `broadcast`) | execute → result; stream chunks; broadcast to the panel |
+| `fetch` | URL → markdown (Jina / readability) |
+| `subscribe` | receive broadcast results (the panel's live channel) |
+
+### Where goo fits (when/if it lands)
+
+goo is a **router** with a noun → verb → destination grammar. It would treat
+fabric as one channel and map onto the socket — a *protocol match*, not custom
+integration:
+
+- `Using: goo://channel/fabric/inference` → the socket's **`run`** → a result.
+- `Using: goo://channel/fabric/assemble` → the socket's **`assemble`** → a prompt.
+- `To:` (clipboard / file / `claude://` / panel) → where goo routes the output.
+
+So **fabric makes** (runs or assembles) and **goo routes**. "Send to Claude" is
+goo's job — assemble a prompt, then hand off via a content-staging layer
+(references, not inline data). The desktop product needs nothing for this; the
+socket is the whole contract. goo, if it arrives, is simply the most ambitious
+client of the 4th surface.
