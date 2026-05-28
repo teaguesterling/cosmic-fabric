@@ -5,8 +5,6 @@ What cosmic-fabric is: a COSMIC-native frontend bundle over a single local
 usefulness**, **how we envision each piece working**, and **what's in place**.
 It's both the vision and the roadmap.
 
-> **Interactive version:** `fabric-on-the-desktop.html` (filterable catalog,
-> color-coded status, checkable Phase-2 list). New here? `getting-started.md`.
 > Companion docs: `design.md` (architecture), `review-and-fabric-integration.md`
 > (code review + product model), `panel-mockup.html` (UI mockups),
 > `cosmic-goo-integration.md` (goo routing — *aspiration, out of scope for now*).
