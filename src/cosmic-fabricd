@@ -132,14 +132,26 @@ def handle(req):
                 "default_vendor": dinst.get("vendor")}
     if op == "run":
         pat = req.get("pattern")
-        if not pat:
-            return {"error": "missing pattern"}
+        image = req.get("image")
+        if not pat and not image:
+            return {"error": "missing pattern"}  # a text run needs a pattern; image runs don't
         pol = core.load_policy()  # re-read live so policy edits take effect
-        inst = core.resolve(pat, pol)
+        inp = req.get("input", "")
+        # An image run needs a vision model — the capability rule swaps one in.
+        inst = core.resolve(pat, pol, need_capability="vision" if image else None)
         model = req.get("model") or inst["model"]
         vendor = req.get("vendor") or inst["vendor"]
+        if image:
+            log(f"run image={image} pattern={pat} model={model} vendor={vendor} (vision rule)")
+            try:
+                out = FAB.run_image(image, inp, model, vendor, pattern=pat or None)
+            except Exception as e:
+                log(f"run-image error: {e}")
+                return {"error": str(e)}
+            pct = core.gpu_placement(model, pol["ollama"]["url"]) if (vendor or "").lower() == "ollama" else None
+            return {"output": out, "model": model, "vendor": vendor, "placement": pct,
+                    "warn_below": pol["ollama"].get("warn_below_gpu", 99), "capability": "vision"}
         opts = core.inst_to_options(inst)
-        inp = req.get("input", "")
         is_ollama = (vendor or "").lower() == "ollama"
         mctx = inst.get("ctx") or (core.pick_ctx(inp) if is_ollama else None)
         log(f"run pattern={pat} model={model} vendor={vendor} input={len(inp)}ch ctx={mctx} opts={opts}")

@@ -47,7 +47,7 @@ Curation: which patterns are "yours" is **include/exclude globs** over names
 | per-pattern **model/vendor** | the right tool per verb (local summarize, cloud visualize) | assign each pattern a **named instantiation** | ✅ Models editor |
 | **deployment params** (ctx, thinking, temperature) | right-size the KV cache; toggle reasoning; tune creativity | **model → variants** (`qwen3/fast` @2048, `qwen3/deep` @16384), default variant | ✅ two-level instantiations + editor |
 | **`modelContextLength`** | stop short inputs over-allocating; let long inputs (web pages) grow | auto-size by input (`pick_ctx`) when a variant has no explicit ctx | ✅ |
-| **capabilities** (text/vision/…) | a vision pattern *can't* run on a text-only model — a hard constraint | tag instantiations; a **capability rule** auto-picks a capable one | 🔶 stored; rule ⬜ (vision verified local — see Prototyping results) |
+| **capabilities** (text/vision/…) | a vision pattern *can't* run on a text-only model — a hard constraint | tag instantiations; a **capability rule** auto-picks a capable one | ✅ **rule built** — daemon auto-swaps to a vision instantiation for image runs (prefers local); socket-validated |
 | ChatOptions **`search`** (model-side web search) | "answer using the web" without scraping | a per-run/instantiation toggle | ⬜ |
 
 ### 3 · Inputs / sources — what you act on
@@ -60,7 +60,7 @@ Curation: which patterns are "yours" is **include/exclude globs** over names
 | **URL / web** (`--scrape_url` Jina, `--readability`) | "summarize this page" from a link | daemon fetches → markdown → feeds the prompt (keyless Jina, no REST dep) | ✅ |
 | **YouTube** (`-y` transcript/comments) | "summarize this talk" | a URL-source variant (transcript → prompt) | ⬜ |
 | **audio** (`--transcribe-file`, STT) | voice notes; "what did this meeting cover" | source → transcribe → prompt; front half of the voice loop | ⬜ needs OpenAI key (STT is OpenAI-only) |
-| **image** (`-a` attachment, vision) | "describe / extract text from this image" | image source; **requires a vision model** (capability rule) | 🔶 **vision works locally** (llama3.2-vision) / claude; source UI ⬜ |
+| **image** (`-a` attachment, vision) | "describe / extract text from this image" | image source; **requires a vision model** (capability rule) | 🔶 **backend built** — daemon image run (`fabric -a` shell-out) + capability rule auto-picks `llama3.2-vision`; validated end-to-end (100% GPU, accurate). Source-pane **UI** ⬜ (mocked) |
 | Spotify (`--spotify`) | podcast metadata | niche; later | ⬜ |
 
 The source is **polymorphic**: the input pane adapts per origin (URL gets a
@@ -213,10 +213,13 @@ Reload first: `pkill cosmic-fabric-panel` (the panel respawns the new binary).
 - [ ] **TTS** — a Gemini voice reads a result aloud.
 
 ### D · Build, capitalizing on what's proven
-- [ ] **Image source + capability rule** (roadmap item 3) — vision is proven local
-      (`llama3.2-vision`); build the image source pane + the rule that auto-picks a
-      vision-capable instantiation. Daemon/rule half is headless-testable; the
-      source-pane UI needs click-validation (so it pairs with §A).
+- [x] **Capability rule + image-run backend** — *done & socket-validated*:
+      `core.resolve(..., need_capability="vision")` auto-swaps to a vision
+      instantiation (prefers local); daemon image run shells out to `fabric -a`.
+      A real image → auto-picked `llama3.2-vision`, 100% GPU, accurate description.
+- [ ] **Image source pane (UI)** — the thumbnail/picker + active model badge in the
+      loom (mocked in `panel-mockup.html`); needs click-validation (pairs with §A).
+      Wire the Rust client to the daemon image run.
 
 ---
 

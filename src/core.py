@@ -101,13 +101,34 @@ def _inst_of(cfg, models):
     return None
 
 
-def resolve(pattern, pol):
+def _first_capable(models, capability):
+    """The first model instantiation (by its default variant) whose capabilities
+    include `capability` — the capability selection rule. Prefers local (Ollama)
+    so vision runs stay on-box when possible."""
+    def caps(m):
+        return [c.lower() for c in (m.get("capabilities") or [])]
+    names = sorted(models, key=lambda n: (models[n].get("vendor", "").lower() != "ollama", n))
+    for name in names:
+        if capability.lower() in caps(models[name]):
+            return _resolve_use(name, models)
+    return None
+
+
+def resolve(pattern, pol, need_capability=None):
     """Resolve a pattern to an effective model instantiation (explicit selection):
     the pattern's own (named `use` or legacy inline) wins, else the default's.
-    Returns a normalized dict."""
+    If `need_capability` is set and the chosen instantiation can't satisfy it
+    (e.g. a text-only model for an image run), the **capability rule** swaps in the
+    first capable instantiation instead. Returns a normalized dict."""
     models = pol.get("models") or {}
     pat = pol.get("patterns", {}).get(pattern, {}) or {}
     inst = _inst_of(pat, models) or _inst_of(pol.get("default", {}), models) or {}
+    if need_capability:
+        have = [c.lower() for c in (inst.get("capabilities") or [])]
+        if need_capability.lower() not in have:
+            capable = _first_capable(models, need_capability)
+            if capable:
+                inst = capable  # the rule: a vision run must use a vision model
     return {
         "model": inst.get("model"),
         "vendor": inst.get("vendor"),
@@ -232,6 +253,21 @@ class FabricClient:
         except Exception as e:
             self.log(f"list_models failed: {e}")
             return []
+
+    def run_image(self, image_path, question, model, vendor, pattern=None, timeout=300):
+        """Vision run: attach an image and ask about it. Shells out to the fabric
+        CLI (`-a`) because the REST `/chat` API has no attachment field. Returns
+        the model's text. Raises on failure."""
+        env = dict(os.environ)
+        env["PATH"] = os.path.expanduser("~/.local/bin") + os.pathsep + env.get("PATH", "")
+        cmd = ["fabric", "-a", image_path, "--model", model, "--vendor", vendor]
+        if pattern:
+            cmd += ["--pattern", pattern]
+        r = subprocess.run(cmd, input=(question or "Describe this image."), text=True,
+                           capture_output=True, timeout=timeout, env=env)
+        if r.returncode != 0:
+            raise RuntimeError((r.stderr or "fabric -a failed").strip()[:400])
+        return r.stdout.strip()
 
     def model_catalog(self):
         """{vendor: [models]} from /models/names — for the per-pattern picker."""

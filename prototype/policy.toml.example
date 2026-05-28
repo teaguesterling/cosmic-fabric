@@ -57,6 +57,12 @@ model = "claude-sonnet-4-6"
 capabilities = ["text", "vision"]
 categories = ["cloud", "deep"]
 
+[models.llama-vision]
+vendor = "Ollama"
+model = "llama3.2-vision:latest"
+capabilities = ["text", "vision"]   # the capability rule picks this for image runs
+categories = ["local", "vision"]
+
 [patterns]
 # Most text verbs run local on iq4xs (the default). Overrides:
 scribe-visualize = { model = "claude-sonnet-4-6", vendor = "Anthropic", extra = [] }  # needs tool execution
