@@ -107,10 +107,9 @@ git clone https://github.com/teaguesterling/cosmic-fabric
 cd cosmic-fabric
 
 cd src && ./install.sh && cd ..  # daemon + shared core → ~/.local/share/cosmic-fabric/,
-                                 # launcher plugin → pop-launcher (+ symlinked onto PATH),
+                                 # launcher plugin → ~/.local/share/pop-launcher/plugins/,
                                  # seeds ~/.config/cosmic-fabric/policy.toml if absent.
-                                 # The daemon is COPIED (stable across edits) — re-run
-                                 # install.sh after a `git pull` to update it.
+                                 # Files are COPIED — re-run install.sh after a `git pull`.
 pkill cosmic-launcher            # reload pop-launcher so it sees the plugin
 
 cd crates && just install        # the panel applet (release build). Or: just install-debug
@@ -196,7 +195,7 @@ Everything below writes `~/.config/cosmic-fabric/policy.toml`, which every surfa
 
 ## 9 · Troubleshooting
 
-- **Daemon not reachable** — `cosmic-fabricd &`; check `~/.cache/cosmic-fabric/daemon.log`.
+- **Daemon not reachable** — `python3 ~/.local/share/cosmic-fabric/cosmic-fabricd &`; check `~/.cache/cosmic-fabric/daemon.log`.
 - **fabric not serving** — the daemon starts `fabric --serve`; or run it yourself and
   `curl localhost:8080/patterns/names`.
 - **No patterns in the popup** — curate an active set in the Library, or confirm the
@@ -212,7 +211,6 @@ Everything below writes `~/.config/cosmic-fabric/policy.toml`, which every surfa
 ```sh
 cd crates && just uninstall                            # panel binary + .desktop + icon
 rm -rf ~/.local/share/cosmic-fabric                    # daemon + core
-rm -rf ~/.local/share/pop-launcher/plugins/cosmic-fabric
-rm -f  ~/.local/bin/cosmic-fabric-launcher             # the PATH symlink
+rm -rf ~/.local/share/pop-launcher/plugins/cosmic-fabric   # launcher plugin
 # optional: rm -rf ~/.config/cosmic-fabric ~/.cache/cosmic-fabric
 ```
