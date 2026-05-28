@@ -176,6 +176,48 @@ model API. For Google models the fabric vendor is **Gemini** (add a Gemini key).
 So vision (item 3) is unblocked **today and locally**; the voice loop (item 4) and
 image-gen wait on an OpenAI and/or Gemini key.
 
+## Phase 2 — monitor-required checklist
+
+Everything below needs a screen (interactive GUI / `fabric --setup`). Phase 1
+(headless: prototyping, the daemon engines, the doc) is done. Phase 2 pairs
+**GUI validation** with **API enablement**, then unblocks the rest.
+
+### A · GUI validation (the live shakedown)
+Reload first: `pkill cosmic-fabric-panel` (the panel respawns the new binary).
+- [ ] **Kit · panel popup** — status pill (serve · model · GPU%), quick-run on
+      clipboard streams a result, "Open workspace…" / "Chat…" buttons, one
+      notification.
+- [ ] **Kit · launcher** — Super → type a verb → runs on the selection → delivers.
+- [ ] **Kit · quick-action** — `Super+Shift+F` on highlighted text → pattern grid
+      → run → inline result + copied. *(If the key doesn't fire, log out/in;
+      verify under Settings → Keyboard → Shortcuts → Custom.)*
+- [ ] **Loom · Run** — source switch (clipboard / text / file path / **URL fetch**),
+      pick a pattern, prompt auto-assembles, **Run** streams, send-to menus
+      (Copy / Save / Claude stub / conversation).
+- [ ] **Loom · Library** — search 265, ★ curate, per-pattern "use" dropdown;
+      confirm the popup + launcher reflect the curated set.
+- [ ] **Loom · Models** — add / edit / delete a model + variants, set categories &
+      default variant; confirm writes to `policy.toml` and the daemon picks them up.
+- [ ] **Session** — multi-turn chat, streaming, New chat.
+- [ ] **Settings window** — result-delivery mode, Ollama URL, warn-below-GPU%.
+
+### B · API enablement (`! fabric --setup`)
+- [ ] Add a **Gemini** key (free at aistudio.google.com/apikey) → unlocks **TTS**,
+      **image-gen**, Google models. *(Note: "Antigravity" is not a vendor — Gemini is.)*
+- [ ] Add an **OpenAI** key → unlocks **STT/transcription**, **image-gen**.
+- [ ] Verify new vendors appear in `/models/names` and in the Models view.
+
+### C · Then-unblocked prototyping (needs B)
+- [ ] **STT** — `fabric --transcribe-file <clip>` → text.
+- [ ] **Image-gen** — `fabric --image-file out.png …` → an image.
+- [ ] **TTS** — a Gemini voice reads a result aloud.
+
+### D · Build, capitalizing on what's proven
+- [ ] **Image source + capability rule** (roadmap item 3) — vision is proven local
+      (`llama3.2-vision`); build the image source pane + the rule that auto-picks a
+      vision-capable instantiation. Daemon/rule half is headless-testable; the
+      source-pane UI needs click-validation (so it pairs with §A).
+
 ---
 
 ## Appendix — goo (isolated; aspirational, out of scope for now)
