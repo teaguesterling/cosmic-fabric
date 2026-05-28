@@ -141,6 +141,24 @@ pub fn run_stream(
     pattern: String,
     input: String,
 ) -> impl cosmic::iced::futures::Stream<Item = RunEvent> {
+    stream_request(serde_json::json!({
+        "op": "run", "stream": true, "pattern": pattern, "input": input
+    }))
+}
+
+/// Stream a chat turn into a fabric session (multi-turn history server-side).
+/// No pattern → the daemon uses `raw_query` (the universal relay).
+pub fn chat_stream(
+    session: String,
+    input: String,
+) -> impl cosmic::iced::futures::Stream<Item = RunEvent> {
+    stream_request(serde_json::json!({
+        "op": "run", "stream": true, "session": session, "input": input
+    }))
+}
+
+/// Shared streaming-run transport: write the request, yield `Chunk`s then `Done`/`Error`.
+fn stream_request(req: serde_json::Value) -> impl cosmic::iced::futures::Stream<Item = RunEvent> {
     use cosmic::iced::futures::SinkExt;
     cosmic::iced::stream::channel(64, move |mut output: cosmic::iced::futures::channel::mpsc::Sender<RunEvent>| async move {
         let conn = match UnixStream::connect(sock_path()).await {
@@ -151,11 +169,7 @@ pub fn run_stream(
             }
         };
         let (rd, mut wr) = conn.into_split();
-        let req = serde_json::json!({
-            "op": "run", "stream": true, "pattern": pattern, "input": input
-        })
-        .to_string()
-            + "\n";
+        let req = req.to_string() + "\n";
         if let Err(e) = wr.write_all(req.as_bytes()).await {
             let _ = output.send(RunEvent::Error(e.to_string())).await;
             return;

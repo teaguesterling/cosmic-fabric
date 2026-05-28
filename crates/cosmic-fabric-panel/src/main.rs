@@ -11,8 +11,9 @@ fn main() -> cosmic::iced::Result {
     match std::env::args().nth(1).as_deref() {
         Some("settings") => cosmic_fabric_panel::run_settings(),
         Some("window") => cosmic_fabric_panel::run_workspace(),
+        Some("session") => cosmic_fabric_panel::run_session(),
         Some(other) => {
-            eprintln!("unknown subcommand: {other}\nusage: cosmic-fabric-panel [settings|window]");
+            eprintln!("unknown subcommand: {other}\nusage: cosmic-fabric-panel [settings|window|session]");
             std::process::exit(2);
         }
         None => cosmic_fabric_panel::run_applet(),

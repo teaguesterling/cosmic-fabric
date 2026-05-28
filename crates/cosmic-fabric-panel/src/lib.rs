@@ -1,5 +1,6 @@
 pub mod daemon;
 pub mod policy;
+pub mod session;
 pub mod settings;
 pub mod window;
 pub mod workspace;
@@ -16,4 +17,8 @@ pub fn run_settings() -> cosmic::iced::Result {
 
 pub fn run_workspace() -> cosmic::iced::Result {
     workspace::run()
+}
+
+pub fn run_session() -> cosmic::iced::Result {
+    session::run()
 }

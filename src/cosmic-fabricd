@@ -163,8 +163,9 @@ def stream_run(req, send):
     requester (the launcher) just gets {"dispatched":true} — this is the
     launcher→panel handoff."""
     pat = req.get("pattern")
-    if not pat:
-        send({"error": "missing pattern"})
+    session = req.get("session")
+    if not pat and not session:
+        send({"error": "missing pattern"})  # a bare run needs a pattern; chat needs a session
         return
     bcast = bool(req.get("broadcast"))
     if bcast:
@@ -175,13 +176,15 @@ def stream_run(req, send):
             # (launcher) fall back to local delivery.
             send({"dispatched": False, "subscribers": 0})
             return
+    if session and not pat:
+        pat = "raw_query"  # fabric's universal relay — chat without a transforming pattern
     pol = core.load_policy()
-    inst = core.resolve(pat, pol)
+    inst = core.resolve(pat or "", pol)  # chat → the default instantiation
     model = req.get("model") or inst["model"]
     vendor = req.get("vendor") or inst["vendor"]
     opts = core.inst_to_options(inst)
     warn_below = pol["ollama"].get("warn_below_gpu", 99)
-    log(f"run-stream pattern={pat} model={model} vendor={vendor} broadcast={bcast}")
+    log(f"run-stream pattern={pat} session={session} model={model} vendor={vendor} broadcast={bcast}")
     if bcast:
         broadcast({"event": "start", "pattern": pat, "model": model})
         send({"dispatched": True, "subscribers": nsubs})  # quick ack; the panel shows it
@@ -195,7 +198,8 @@ def stream_run(req, send):
     inp = req.get("input", "")
     mctx = inst.get("ctx") or (core.pick_ctx(inp) if (vendor or "").lower() == "ollama" else None)
     try:
-        out = FAB.run(pat, inp, model, vendor, req.get("variables"), opts, on_chunk=on_chunk, model_ctx=mctx)
+        out = FAB.run(pat, inp, model, vendor, req.get("variables"), opts,
+                      on_chunk=on_chunk, model_ctx=mctx, session=session)
     except Exception as e:
         log(f"run-stream error: {e}")
         (broadcast if bcast else send)({"event": "error", "error": str(e)} if bcast else {"error": str(e)})

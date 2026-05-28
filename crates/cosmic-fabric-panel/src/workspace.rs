@@ -182,6 +182,7 @@ pub enum Message {
     Retry,
     Clear,
     OpenSettings,
+    OpenSession,
     Refresh,
     DismissError,
 }
@@ -584,6 +585,11 @@ impl cosmic::Application for Workspace {
                     let _ = std::process::Command::new(exe).arg("settings").spawn();
                 }
             }
+            Message::OpenSession => {
+                if let Ok(exe) = std::env::current_exe() {
+                    let _ = std::process::Command::new(exe).arg("session").spawn();
+                }
+            }
             Message::Refresh => return cosmic::Task::batch([status_task(), patterns_task()]),
             Message::DismissError => self.error = None,
         }
@@ -659,6 +665,7 @@ impl cosmic::Application for Workspace {
                 .spacing(s.space_xs)
                 .align_y(Alignment::Center);
                 foot = foot.push(cosmic::widget::Space::new().width(Length::Fill));
+                foot = foot.push(button::text("Chat…").on_press(Message::OpenSession));
                 foot = foot.push(button::text("Refresh").on_press(Message::Refresh));
                 foot = foot.push(button::text("Settings…").on_press(Message::OpenSettings));
                 col = col.push(foot);

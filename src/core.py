@@ -244,19 +244,24 @@ class FabricClient:
             return {}
 
     def run(self, pattern, user_input, model, vendor, variables=None, options=None,
-            timeout=600, on_chunk=None, model_ctx=None):
+            timeout=600, on_chunk=None, model_ctx=None, session=None):
         """POST /chat (SSE) → accumulated text. If `on_chunk` is given, it's
         called with each content fragment as it streams. `model_ctx` sets the
         requested context window (`modelContextLength`) — used to right-size the
-        Ollama KV cache for large inputs (web pages, files). Raises on error."""
+        Ollama KV cache for large inputs (web pages, files). `session` sets
+        `sessionName` so fabric maintains multi-turn conversation history server-
+        side (the Session surface). Raises on error."""
+        prompt = {
+            "userInput": user_input,
+            "patternName": pattern or "",
+            "model": model,
+            "vendor": vendor,
+            "variables": variables or {},
+        }
+        if session:
+            prompt["sessionName"] = session
         body = {
-            "prompts": [{
-                "userInput": user_input,
-                "patternName": pattern,
-                "model": model,
-                "vendor": vendor,
-                "variables": variables or {},
-            }],
+            "prompts": [prompt],
             "model": model,
         }
         if model_ctx:
@@ -285,6 +290,8 @@ class FabricClient:
                     self.log(f"sse[{raw_seen}] type={ev.get('type')!r} keys={list(ev)} clen={len(ev.get('content','') or '')}")
                 if ev.get("type") == "error":
                     err = ev.get("content") or "fabric error"
+                if ev.get("type") == "complete":
+                    break  # fabric's end-of-stream marker (don't wait for socket close)
                 if ev.get("content"):
                     out.append(ev["content"])
                     if on_chunk:

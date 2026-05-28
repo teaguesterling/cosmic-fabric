@@ -44,6 +44,7 @@ pub enum Message {
     CopyResult,
     OpenSettings,
     OpenWorkspace,
+    OpenSession,
 }
 
 impl cosmic::Application for Window {
@@ -255,6 +256,15 @@ impl cosmic::Application for Window {
                 }
                 app::Task::none()
             }
+            Message::OpenSession => {
+                if let Ok(exe) = std::env::current_exe() {
+                    let _ = std::process::Command::new(exe).arg("session").spawn();
+                }
+                if let Some(p) = self.popup.take() {
+                    return destroy_popup(p);
+                }
+                app::Task::none()
+            }
         }
     }
 
@@ -328,6 +338,7 @@ impl cosmic::Application for Window {
         col = col.push(padded_control(
             cosmic::iced::widget::row![
                 button::text("Open workspace\u{2026}").on_press(Message::OpenWorkspace),
+                button::text("Chat\u{2026}").on_press(Message::OpenSession),
                 button::text("Refresh").on_press(Message::Refresh),
                 button::text("Settings\u{2026}").on_press(Message::OpenSettings),
             ]
