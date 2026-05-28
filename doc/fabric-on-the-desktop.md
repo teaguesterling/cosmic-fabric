@@ -200,3 +200,25 @@ goo's job — assemble a prompt, then hand off via a content-staging layer
 (references, not inline data). The desktop product needs nothing for this; the
 socket is the whole contract. goo, if it arrives, is simply the most ambitious
 client of the 4th surface.
+
+### Two arrows — goo and fabric are bidirectional siblings
+
+The socket relationship is only one direction. There are two:
+
+- **goo → fabric** *(the socket; above)* — goo, headless, consumes the socket as
+  a client to *run/assemble* a pattern.
+- **fabric → goo** *(a destination; the UI, not the socket)* — a **"Send to goo"**
+  entry in fabric's send-to registry that hands the produced artifact (a result
+  *or* an assembled prompt) to **goo's UI** — its launcher/composer — *seeded*, so
+  the user dispatches it onward through goo's noun→verb→destination grammar (to an
+  agent, a chat, a file, another verb).
+
+The distinction matters: fabric→goo opens goo's **user surface** for interactive
+routing (the same hand-off shape as "Send to Claude Desktop" — open the app, seed
+it, let the human choose), **not** a headless call into goo. goo becomes a
+**meta-destination**: *"I don't know the final sink yet — let goo route it."* It's
+the natural answer to a send-to target that isn't Copy/Save/a specific agent.
+
+Both arrows stay optional; cosmic-fabric ships without either. But this is why a
+future send-to registry leaves room for a dispatcher destination, not just
+terminal sinks.
