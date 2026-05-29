@@ -60,7 +60,7 @@ Curation: which patterns are "yours" is **include/exclude globs** over names
 | **URL / web** (`--scrape_url` Jina, `--readability`) | "summarize this page" from a link | daemon fetches → markdown → feeds the prompt (keyless Jina, no REST dep) | ✅ |
 | **YouTube** (`-y` transcript/comments) | "summarize this talk" | a URL-source variant (transcript → prompt) | ⬜ |
 | **audio** (`--transcribe-file`, STT) | voice notes; "what did this meeting cover" | source → transcribe → prompt; front half of the voice loop | ⬜ needs OpenAI key (STT is OpenAI-only) |
-| **image** (`-a` attachment, vision) | "describe / extract text from this image" | image source; **requires a vision model** (capability rule) | 🔶 **backend + loom UI built** — daemon image run + capability rule (validated, 100% GPU); **Image source in the loom** (path-based) + `daemon::run_image` client. Native picker/thumbnail ⬜ (mocked); click-validation pending |
+| **image** (`-a` attachment, vision) | "describe / extract text from this image" | image source; **requires a vision model** (capability rule) | 🔶 **backend + loom UI built** — image run + capability rule (validated, 100% GPU); loom **Image source**: path, **"From clipboard"**, or **auto-detected** when the workbench opens with an image copied. Native picker/thumbnail ⬜ (mocked) |
 | Spotify (`--spotify`) | podcast metadata | niche; later | ⬜ |
 
 The source is **polymorphic**: the input pane adapts per origin (URL gets a

@@ -151,6 +151,7 @@ pub enum Message {
     FileInput(String),
     LoadFile,
     ImagePath(String),
+    ImageFromClipboard,
     RunImageDone(Result<RunResult, String>),
     PickPattern(usize),
     AssembleDebounced(u64),
@@ -210,6 +211,9 @@ impl cosmic::Application for Workspace {
     const APP_ID: &'static str = WORKSPACE_APP_ID;
 
     fn init(core: app::Core, _flags: Self::Flags) -> (Self, app::Task<Self::Message>) {
+        // If an image is on the clipboard, open straight into Image mode with it
+        // loaded (ready for a vision Run); else load clipboard text as the source.
+        let clip_image = daemon::clipboard_image();
         let me = Self {
             core,
             status: None,
@@ -230,12 +234,12 @@ impl cosmic::Application for Workspace {
             av_name: String::new(),
             av_ctx: String::new(),
             av_thinking: None,
-            origin: Origin::Clipboard,
+            origin: if clip_image.is_some() { Origin::Image } else { Origin::Clipboard },
             source: text_editor::Content::new(),
             url_input: String::new(),
             file_input: String::new(),
-            image_path: String::new(),
-            transform_note: None,
+            image_path: clip_image.clone().unwrap_or_default(),
+            transform_note: clip_image.as_ref().map(|_| "image from the clipboard".into()),
             prompt: None,
             prompt_collapsed: false,
             asm_gen: 0,
@@ -249,15 +253,11 @@ impl cosmic::Application for Workspace {
             status_msg: None,
             open_menu: None,
         };
-        (
-            me,
-            cosmic::Task::batch([
-                status_task(),
-                patterns_task(),
-                catalog_task(),
-                load_clipboard_task(),
-            ]),
-        )
+        let mut tasks = vec![status_task(), patterns_task(), catalog_task()];
+        if clip_image.is_none() {
+            tasks.push(load_clipboard_task()); // text clipboard → source editor
+        }
+        (me, cosmic::Task::batch(tasks))
     }
 
     fn core(&self) -> &cosmic::app::Core {
@@ -334,6 +334,14 @@ impl cosmic::Application for Workspace {
             }
             Message::FileInput(s) => self.file_input = s,
             Message::ImagePath(s) => self.image_path = s,
+            Message::ImageFromClipboard => match daemon::clipboard_image() {
+                Some(p) => {
+                    self.image_path = p;
+                    self.transform_note = Some("image grabbed from the clipboard".into());
+                    self.error = None;
+                }
+                None => self.error = Some("No image on the clipboard — copy one first.".into()),
+            },
             Message::LoadFile => {
                 let path = expand_tilde(self.file_input.trim());
                 match std::fs::read_to_string(&path) {
@@ -1074,9 +1082,13 @@ impl Workspace {
             }
             Origin::Image => {
                 col = col.push(
-                    cosmic::iced::widget::row![text_input("/path/to/image.png", &self.image_path)
-                        .on_input(Message::ImagePath)
-                        .width(Length::Fill)]
+                    cosmic::iced::widget::row![
+                        text_input("/path/to/image.png", &self.image_path)
+                            .on_input(Message::ImagePath)
+                            .width(Length::Fill),
+                        button::standard("From clipboard").on_press(Message::ImageFromClipboard),
+                    ]
+                    .spacing(s.space_xs)
                     .align_y(Alignment::Center),
                 );
                 col = col.push(text::caption(

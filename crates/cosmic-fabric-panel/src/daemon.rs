@@ -289,28 +289,51 @@ pub fn subscribe() -> impl cosmic::iced::futures::Stream<Item = BrokerEvent> {
     })
 }
 
-/// The primary selection (highlighted text), falling back to the clipboard —
-/// the quick-action's input source.
-pub fn selection() -> String {
-    for args in [&["-p", "-n"][..], &["-n"][..]] {
-        if let Ok(o) = std::process::Command::new("wl-paste").args(args).output() {
-            let s = String::from_utf8_lossy(&o.stdout).to_string();
-            if !s.trim().is_empty() {
-                return s;
+/// Grab **text** from the clipboard (or primary selection). Requests text MIME
+/// types explicitly, so an image-only clipboard yields nothing rather than raw
+/// bytes — feeding image bytes into a text widget panics cosmic-text's shaper.
+fn paste_text(primary: bool) -> Option<String> {
+    for t in ["text/plain;charset=utf-8", "text/plain", "UTF8_STRING", "TEXT", "STRING"] {
+        let mut c = std::process::Command::new("wl-paste");
+        c.args(["-n", "-t", t]);
+        if primary {
+            c.arg("-p");
+        }
+        if let Ok(o) = c.output() {
+            if o.status.success() && !o.stdout.is_empty() {
+                return Some(String::from_utf8_lossy(&o.stdout).into_owned());
             }
         }
     }
-    String::new()
+    None
 }
 
-/// Current clipboard text (the panel's quick-run input source).
+/// The primary selection (highlighted text), falling back to the clipboard —
+/// the quick-action's input source. Text only (see `paste_text`).
+pub fn selection() -> String {
+    paste_text(true).or_else(|| paste_text(false)).unwrap_or_default()
+}
+
+/// If the clipboard holds an image, write it to a temp file and return the path
+/// (for a vision run). Picks the first `image/*` type offered.
+pub fn clipboard_image() -> Option<String> {
+    let types = std::process::Command::new("wl-paste").arg("--list-types").output().ok()?;
+    let types = String::from_utf8_lossy(&types.stdout);
+    let mime = types.lines().map(|l| l.trim()).find(|l| l.starts_with("image/"))?.to_string();
+    let ext = mime.rsplit('/').next().unwrap_or("png");
+    let out = std::process::Command::new("wl-paste").arg("-t").arg(&mime).output().ok()?;
+    if out.stdout.is_empty() {
+        return None;
+    }
+    let path = std::env::temp_dir().join(format!("cosmic-fabric-clip.{ext}"));
+    std::fs::write(&path, &out.stdout).ok()?;
+    Some(path.to_string_lossy().into_owned())
+}
+
+/// Current clipboard **text** (the panel/workspace quick-run input source).
+/// Text only — an image clipboard returns "" (see `paste_text`).
 pub fn clipboard() -> String {
-    std::process::Command::new("wl-paste")
-        .arg("-n")
-        .output()
-        .ok()
-        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-        .unwrap_or_default()
+    paste_text(false).unwrap_or_default()
 }
 
 pub fn set_clipboard(text: &str) {

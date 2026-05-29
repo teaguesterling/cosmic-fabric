@@ -100,8 +100,10 @@ hardcoded model names anywhere — it's all your config.
 
 ## 6 · Ask about an image  *(the loom · vision)*
 
-1. In **Run** mode, click the **Image** source button.
-2. Paste a path to an image (e.g. `~/Pictures/Screenshots/shot.png`).
+1. In **Run** mode, click the **Image** source button. *(Shortcut: copy an image
+   first — the workbench opens straight into Image mode with it loaded.)*
+2. Paste a path to an image (e.g. `~/Pictures/Screenshots/shot.png`), or click
+   **From clipboard** to grab a copied image.
 3. In the text box, type your question: *"What's in this screenshot?"*
 4. Click **Run**.
 
