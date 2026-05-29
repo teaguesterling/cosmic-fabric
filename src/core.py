@@ -192,8 +192,13 @@ def extra_to_options(extra):
 
 
 # ---------- fabric REST client ---------------------------------------------
+# fabric --serve defaults --address to ":8080" (= 0.0.0.0, all interfaces),
+# exposing the API (and your keys) on the LAN. We pin it to loopback.
+FABRIC_ADDRESS = "127.0.0.1:8080"
+
+
 class FabricClient:
-    def __init__(self, url="http://localhost:8080", log=lambda m: None):
+    def __init__(self, url="http://127.0.0.1:8080", log=lambda m: None):
         self.url = url.rstrip("/")
         self.log = log
 
@@ -213,9 +218,10 @@ class FabricClient:
             return True
         env = dict(os.environ)
         env["PATH"] = os.path.expanduser("~/.local/bin") + os.pathsep + env.get("PATH", "")
-        self.log("fabric --serve not up; starting it")
+        self.log(f"fabric --serve not up; starting it on {FABRIC_ADDRESS}")
         try:
-            subprocess.Popen(["fabric", "--serve"], env=env, start_new_session=True,
+            subprocess.Popen(["fabric", "--serve", "--address", FABRIC_ADDRESS],
+                             env=env, start_new_session=True,
                              stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception as e:
             self.log(f"failed to spawn fabric --serve: {e}")

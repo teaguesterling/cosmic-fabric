@@ -183,5 +183,11 @@ The daemon re-reads `policy.toml` per run, so edits take effect immediately.
 - **Quick-action key does nothing** — log out/in; verify under Settings → Keyboard
   → Shortcuts → Custom.
 - **A vendor's models are missing** — its key isn't set; `fabric --setup`.
+- **Is fabric exposed on the network?** The daemon binds `fabric --serve` to
+  **`127.0.0.1:8080`** (loopback only) — its REST API holds your API keys, so it
+  must not be LAN-reachable. Check: `ss -tlnp | grep :8080` should show
+  `127.0.0.1:8080`, not `*`/`0.0.0.0`. (fabric's own default is `:8080` = all
+  interfaces; we override it.) If you *want* LAN access, do it deliberately —
+  `--address 0.0.0.0:8080` **with** `--api-key`.
 - **Settings/model changes not taking** — the daemon re-reads per run; for the
   panel's curated list, reopen the popup.
