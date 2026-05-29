@@ -175,7 +175,7 @@
         <div class="env"><span class="lbl">envisioned · status</span>source → transcribe → prompt. fabric STT is OpenAI-only — needs a key.</div></div>
       <div class="row" data-status="partial"><div class="feat">image (vision)<span class="st"><span class="dot partial"></span>backend built</span></div>
         <div class="use"><span class="lbl">desktop use</span>"describe / extract text from this image"</div>
-        <div class="env"><span class="lbl">envisioned · status</span><b>backend built &amp; validated</b> — image run (<code>fabric -a</code>) + capability rule auto-picks <code>llama3.2-vision</code> (100% GPU, accurate). Source-pane UI planned (mocked).</div></div>
+        <div class="env"><span class="lbl">envisioned · status</span><b>backend + loom UI built</b> — image run (<code>fabric -a</code>) + capability rule auto-picks <code>llama3.2-vision</code> (100% GPU, accurate); <b>Image source in the loom</b> (path-based) + <code>run_image</code> client. Native picker/thumbnail planned (mocked); click-validation pending.</div></div>
       <div class="row" data-status="planned"><div class="feat">Spotify<span class="st"><span class="dot planned"></span>planned</span></div>
         <div class="use"><span class="lbl">desktop use</span>podcast metadata</div>
         <div class="env"><span class="lbl">envisioned · status</span>niche; later.</div></div>
@@ -262,7 +262,7 @@
   <ul class="road">
     <li><b>Live shakedown</b> of what's built (no new code; needs a monitor).</li>
     <li><b>Escalate-from-one-off</b> → a session seeded with a result. <b style="color:var(--good)">done</b> ("↪ Chat" on the loom response + quick-action result).</li>
-    <li><b>Capability rule + image source</b> — rule + backend <b style="color:var(--good)">done</b>; image-source UI remains.</li>
+    <li><b>Capability rule + image source</b> — rule + backend <b style="color:var(--good)">done</b>; path-based <b>Image source wired into the loom</b>. Remaining: native picker/thumbnail + click-validation.</li>
     <li><b>Audio in / TTS out</b> — the voice loop (fabric does STT + TTS natively). Needs keys.</li>
     <li><b>Contexts &amp; strategies</b> — reusable background + CoT strategies.</li>
     <li><b>goo routing</b> — real agent hand-off, when goo's route layer exists.</li>

@@ -45,6 +45,7 @@ pub enum Origin {
     Text,
     File,
     Url,
+    Image,
 }
 
 /// Which produced artifact a send-to control routes.
@@ -118,6 +119,7 @@ pub struct Workspace {
     source: text_editor::Content,
     url_input: String,
     file_input: String,
+    image_path: String,             // image source: a path (native picker is monitor-time)
     transform_note: Option<String>, // e.g. "fetched · 4,210 chars markdown"
 
     prompt: Option<String>,
@@ -148,6 +150,8 @@ pub enum Message {
     FetchDone(Result<(String, usize), String>),
     FileInput(String),
     LoadFile,
+    ImagePath(String),
+    RunImageDone(Result<RunResult, String>),
     PickPattern(usize),
     AssembleDebounced(u64),
     AssembleDone(u64, Result<String, String>),
@@ -230,6 +234,7 @@ impl cosmic::Application for Workspace {
             source: text_editor::Content::new(),
             url_input: String::new(),
             file_input: String::new(),
+            image_path: String::new(),
             transform_note: None,
             prompt: None,
             prompt_collapsed: false,
@@ -328,6 +333,7 @@ impl cosmic::Application for Workspace {
                 self.error = Some(format!("fetch failed: {e}"));
             }
             Message::FileInput(s) => self.file_input = s,
+            Message::ImagePath(s) => self.image_path = s,
             Message::LoadFile => {
                 let path = expand_tilde(self.file_input.trim());
                 match std::fs::read_to_string(&path) {
@@ -361,6 +367,25 @@ impl cosmic::Application for Workspace {
             Message::TogglePrompt => self.prompt_collapsed = !self.prompt_collapsed,
 
             Message::Run => {
+                if self.origin == Origin::Image {
+                    let path = self.image_path.trim().to_string();
+                    if path.is_empty() {
+                        self.error = Some("Enter an image path first.".into());
+                        return app::Task::none();
+                    }
+                    let question = self.source.text();
+                    let pattern = self.selected_idx.map(|i| self.patterns[i].clone());
+                    self.response = Some(String::new());
+                    self.result_meta = None;
+                    self.running = true;
+                    self.error = None;
+                    self.status_msg = None;
+                    // vision run is non-streaming (CLI shell-out) → a one-shot Task
+                    return cosmic::Task::perform(
+                        daemon::run_image(path, question, pattern),
+                        |r| cosmic::Action::App(Message::RunImageDone(r)),
+                    );
+                }
                 let Some(idx) = self.selected_idx else {
                     self.error = Some("Pick a pattern first.".into());
                     return app::Task::none();
@@ -399,6 +424,15 @@ impl cosmic::Application for Workspace {
                     self.error = Some(e);
                 }
             },
+            Message::RunImageDone(Ok(rr)) => {
+                self.running = false;
+                self.response = Some(rr.output.clone().unwrap_or_default());
+                self.result_meta = Some(format!("{}  \u{00b7} vision", meta_line(&rr)));
+            }
+            Message::RunImageDone(Err(e)) => {
+                self.running = false;
+                self.error = Some(e);
+            }
 
             Message::ToggleMenu(a) => {
                 self.open_menu = if self.open_menu == Some(a) { None } else { Some(a) };
@@ -997,12 +1031,12 @@ impl Workspace {
             (Origin::Text, "Text"),
             (Origin::File, "File"),
             (Origin::Url, "URL"),
+            (Origin::Image, "Image"),
         ] {
             origins = origins.push(origin_btn(label, self.origin == o, Some(Message::SetOrigin(o))));
         }
-        // disabled future origins
+        // disabled future origin
         origins = origins.push(origin_btn("Audio", false, None));
-        origins = origins.push(origin_btn("Image", false, None));
         col = col.push(origins);
 
         // per-origin loader controls
@@ -1038,10 +1072,21 @@ impl Workspace {
                     .align_y(Alignment::Center),
                 );
             }
+            Origin::Image => {
+                col = col.push(
+                    cosmic::iced::widget::row![text_input("/path/to/image.png", &self.image_path)
+                        .on_input(Message::ImagePath)
+                        .width(Length::Fill)]
+                    .align_y(Alignment::Center),
+                );
+                col = col.push(text::caption(
+                    "Vision run — the box below is your question; Run auto-picks a vision model.",
+                ));
+            }
             Origin::Text => {}
         }
 
-        // the editable source itself
+        // the editable source itself (for Image: your question about it)
         col = col.push(
             text_editor(&self.source)
                 .placeholder("Type or load the source text…")
@@ -1059,6 +1104,20 @@ impl Workspace {
     }
 
     fn prompt_card(&self, s: &cosmic::cosmic_theme::Spacing) -> Element<'_, Message> {
+        if self.origin == Origin::Image {
+            return container(
+                Column::new()
+                    .spacing(s.space_xxs)
+                    .push(text::heading("Prompt"))
+                    .push(text::caption(
+                        "\u{1f5bc} Vision run — the image + your question go to the model; \
+                         no text prompt is assembled.",
+                    )),
+            )
+            .padding(s.space_xs)
+            .class(theme::Container::Card)
+            .into();
+        }
         let title = self
             .selected_idx
             .map(|i| format!("Prompt  \u{00b7}  {}", self.pattern_labels[i]))
@@ -1203,6 +1262,10 @@ impl Workspace {
     }
 
     fn trigger_assemble(&mut self) -> app::Task<Message> {
+        if self.origin == Origin::Image {
+            self.prompt = None; // image runs send the image + question, not an assembled text prompt
+            return app::Task::none();
+        }
         let Some(idx) = self.selected_idx else {
             self.prompt = None;
             return app::Task::none();

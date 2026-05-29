@@ -60,7 +60,7 @@ Curation: which patterns are "yours" is **include/exclude globs** over names
 | **URL / web** (`--scrape_url` Jina, `--readability`) | "summarize this page" from a link | daemon fetches → markdown → feeds the prompt (keyless Jina, no REST dep) | ✅ |
 | **YouTube** (`-y` transcript/comments) | "summarize this talk" | a URL-source variant (transcript → prompt) | ⬜ |
 | **audio** (`--transcribe-file`, STT) | voice notes; "what did this meeting cover" | source → transcribe → prompt; front half of the voice loop | ⬜ needs OpenAI key (STT is OpenAI-only) |
-| **image** (`-a` attachment, vision) | "describe / extract text from this image" | image source; **requires a vision model** (capability rule) | 🔶 **backend built** — daemon image run (`fabric -a` shell-out) + capability rule auto-picks `llama3.2-vision`; validated end-to-end (100% GPU, accurate). Source-pane **UI** ⬜ (mocked) |
+| **image** (`-a` attachment, vision) | "describe / extract text from this image" | image source; **requires a vision model** (capability rule) | 🔶 **backend + loom UI built** — daemon image run + capability rule (validated, 100% GPU); **Image source in the loom** (path-based) + `daemon::run_image` client. Native picker/thumbnail ⬜ (mocked); click-validation pending |
 | Spotify (`--spotify`) | podcast metadata | niche; later | ⬜ |
 
 The source is **polymorphic**: the input pane adapts per origin (URL gets a
@@ -127,8 +127,9 @@ on Wayland — the hotkey+selection path is the feasible equivalent.*
 2. ~~**Escalate-from-one-off** → open a session seeded with a result.~~ ✅ done —
    "↪ Chat" on the loom response + the quick-action result launches a session
    pre-seeded with the result.
-3. **Capability rule + image source** (§2 capabilities + §3 image) — the rule that
-   justifies instantiations; needs a vision model prototyped. 🔬
+3. **Capability rule + image source** (§2 + §3) — rule + backend **done** (vision
+   proven local); **path-based Image source wired into the loom**. Remaining:
+   native picker / thumbnail + click-validation.
 4. **Audio in / TTS out** (§3 audio + §4 TTS) — the voice loop; fabric does STT
    (`--transcribe-file`) + TTS natively. 🔬
 5. **Contexts & strategies** (§6) — reusable background + CoT strategies.
@@ -219,9 +220,11 @@ Reload first: `pkill cosmic-fabric-panel` (the panel respawns the new binary).
       `core.resolve(..., need_capability="vision")` auto-swaps to a vision
       instantiation (prefers local); daemon image run shells out to `fabric -a`.
       A real image → auto-picked `llama3.2-vision`, 100% GPU, accurate description.
-- [ ] **Image source pane (UI)** — the thumbnail/picker + active model badge in the
-      loom (mocked in `panel-mockup.html`); needs click-validation (pairs with §A).
-      Wire the Rust client to the daemon image run.
+- [x] **Image source in the loom + `run_image` client** — *done*: an Image origin
+      (path-based) runs a vision pattern via the daemon; capability rule picks the
+      model. Needs click-validation (§A).
+- [ ] **Native image picker + thumbnail / active-model badge** — the polished
+      source pane (mocked in `panel-mockup.html`); replaces path-paste.
 
 ---
 

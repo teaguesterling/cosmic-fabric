@@ -128,6 +128,26 @@ pub async fn fetch_url(url: String, mode: String) -> Result<(String, usize), Str
     Ok((text, chars))
 }
 
+/// A vision run: send an image (path) + a question; the daemon applies the
+/// capability rule (auto-picks a vision model) and shells out to `fabric -a`.
+/// Non-streaming — one request → one result.
+pub async fn run_image(
+    image: String,
+    input: String,
+    pattern: Option<String>,
+) -> Result<RunResult, String> {
+    let mut req = serde_json::json!({ "op": "run", "image": image, "input": input });
+    if let Some(p) = pattern {
+        req["pattern"] = serde_json::Value::String(p);
+    }
+    let v = call(req).await?;
+    let rr: RunResult = serde_json::from_value(v).map_err(|e| e.to_string())?;
+    match rr.error {
+        Some(e) => Err(e),
+        None => Ok(rr),
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum RunEvent {
     Chunk(String),
