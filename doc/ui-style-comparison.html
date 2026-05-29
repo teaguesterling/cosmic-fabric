@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>cosmic-fabric — UI style comparison (current vs AI-ish)</title>
+<style>
+  :root{
+    --bg:#1c1c1f;--surface:#26262a;--card:#2f2f34;--card2:#37373d;--line:#45454c;
+    --text:#e7e7ea;--dim:#a4a4ad;--faint:#74747e;--accent:#6aa9c9;--accent-dim:#2f4d5c;
+    --good:#67c187;--radius:14px;--rsm:9px;font-family:"Fira Sans","Inter",system-ui,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--text);line-height:1.5;-webkit-font-smoothing:antialiased;padding:32px 20px 80px}
+  .wrap{max-width:980px;margin:0 auto}
+  h1{font-size:24px;font-weight:700;margin-bottom:4px}
+  .sub{color:var(--dim);font-size:14px;margin-bottom:6px}
+  .sub code{background:var(--card);padding:1px 5px;border-radius:4px;font-size:12px}
+  h2{font-size:18px;font-weight:600;margin:30px 0 4px;display:flex;align-items:center;gap:8px}
+  .h2note{color:var(--faint);font-size:13px;font-weight:400;margin-bottom:14px}
+
+  .compare{display:flex;gap:22px;flex-wrap:wrap;align-items:flex-start}
+  .col{flex:1;min-width:300px}
+  .tag{font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--faint);margin-bottom:8px}
+  .tag.now{color:var(--dim)}
+  .tag.ai{color:var(--accent)}
+
+  /* device frame */
+  .frame{width:100%;background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);
+    box-shadow:0 16px 40px rgba(0,0,0,.5);overflow:hidden;display:flex;flex-direction:column}
+  .frame.tall{height:520px}
+
+  /* generic bits */
+  .hdr{display:flex;align-items:center;gap:8px;padding:11px 14px;border-bottom:1px solid var(--line)}
+  .hdr .ttl{font-weight:600;font-size:14px}
+  .hdr .sp{flex:1}
+  .cap{color:var(--faint);font-size:11.5px}
+  .btn{display:inline-flex;align-items:center;gap:6px;border-radius:var(--rsm);font-size:12.5px;
+    font-weight:500;padding:7px 13px;border:1px solid transparent;color:var(--text);background:transparent}
+  .btn.flat{color:var(--dim)}.btn.outline{border-color:var(--line)}
+  .btn.sug{background:var(--accent);color:#10222b;font-weight:600}
+  .chip{display:inline-block;background:var(--card);border:1px solid var(--line);border-radius:999px;
+    padding:4px 11px;font-size:12px;color:var(--dim);cursor:default}
+  .ico{width:30px;height:30px;border-radius:8px;display:grid;place-items:center;color:var(--dim);font-size:15px}
+  .scroll{flex:1;overflow:hidden;padding:12px 14px}
+
+  /* ---- session: current (labeled blocks) ---- */
+  .blk{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:9px 11px;margin-bottom:10px}
+  .blk.asst{background:#223038;border-color:var(--accent-dim)}
+  .blk .who{font-size:10.5px;color:var(--faint);margin-bottom:3px}
+  .blk .body{font-size:12.5px}
+  .inrow{display:flex;gap:8px;align-items:center;padding:10px 14px;border-top:1px solid var(--line)}
+  .inrow input{flex:1;background:var(--card);border:1px solid var(--line);border-radius:8px;
+    padding:8px 10px;color:var(--text);font-size:12.5px}
+
+  /* ---- session: AI-ish (bubbles + big composer) ---- */
+  .conv{flex:1;overflow:hidden;padding:14px 14px 6px;display:flex;flex-direction:column;gap:14px}
+  .bub{max-width:80%;font-size:13px;line-height:1.55;padding:9px 13px;border-radius:16px}
+  .bub.u{align-self:flex-end;background:var(--accent);color:#10222b;border-bottom-right-radius:5px}
+  .bub.a{align-self:flex-start;color:var(--text);padding-left:2px}
+  .bub.a .role{display:flex;align-items:center;gap:7px;color:var(--faint);font-size:11px;margin-bottom:3px}
+  .bub.a .dot{width:16px;height:16px;border-radius:6px;background:linear-gradient(135deg,var(--accent),var(--accent-dim));display:grid;place-items:center;font-size:9px}
+  .composer{margin:6px 12px 12px;background:var(--card);border:1px solid var(--line);border-radius:16px;
+    padding:10px 12px;display:flex;flex-direction:column;gap:8px}
+  .composer:focus-within{border-color:var(--accent)}
+  .composer .ph{color:var(--faint);font-size:13.5px;min-height:38px}
+  .composer .row{display:flex;align-items:center;gap:8px}
+  .composer .meta{color:var(--faint);font-size:11px}
+  .send{margin-left:auto;width:30px;height:30px;border-radius:50%;background:var(--accent);color:#10222b;
+    display:grid;place-items:center;font-size:15px;font-weight:700}
+
+  /* ---- quick-action ---- */
+  .qhead{padding:12px 14px 6px}
+  .qhead .t{font-size:15px;font-weight:600}
+  .sel{margin:0 14px 6px;background:var(--card);border:1px solid var(--line);border-radius:8px;
+    padding:7px 10px;font-size:12px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .plist{padding:2px 8px}
+  .prow{display:flex;align-items:center;gap:9px;padding:8px 10px;border-radius:8px;font-size:13px}
+  .prow:hover{background:var(--card)}
+  .prow .pi{width:24px;height:24px;border-radius:6px;background:var(--accent-dim);color:var(--accent);display:grid;place-items:center;font-size:12px}
+  .askbox{margin:10px 14px;background:var(--card);border:1px solid var(--accent-dim);border-radius:14px;padding:12px 13px}
+  .askbox .ph{color:var(--text);font-size:14px;min-height:30px}
+  .askbox .ph .cur{opacity:.4}
+  .askbox .r{display:flex;align-items:center;gap:8px;margin-top:8px}
+  .askbox .hint{color:var(--faint);font-size:11px}
+  .sugg{display:flex;flex-wrap:wrap;gap:6px;padding:2px 14px 10px}
+  .sugg .chip{cursor:pointer;font-size:11.5px;padding:3px 10px}
+  .sugg .chip:hover{background:var(--card2);color:var(--text)}
+  .resbox{margin:4px 14px 12px;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 12px;font-size:12.5px}
+  .ftr{display:flex;gap:6px;align-items:center;padding:8px 12px;border-top:1px solid var(--line)}
+
+  .notes{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:14px 16px;margin-top:14px;font-size:13px;color:var(--dim)}
+  .notes b{color:var(--text)} .notes ul{margin:6px 0 0 18px} .notes li{margin:3px 0}
+  .notes code{background:var(--card);padding:1px 5px;border-radius:4px;font-size:11.5px}
+  .foot{color:var(--faint);font-size:11.5px;margin-top:28px;text-align:center}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>UI style — current vs AI-ish</h1>
+  <p class="sub">Both columns use the <b>COSMIC palette &amp; widgets</b> — the "AI-ish" feel comes from <b>layout</b> (roomy input, conversational flow), not custom theming. Native chrome stays; the loom stays structured.</p>
+
+  <!-- ===================== SESSION ===================== -->
+  <h2>💬 Session</h2>
+  <div class="h2note">A chat is the one surface where "big input box" is just correct. Lean in.</div>
+  <div class="compare">
+    <div class="col">
+      <div class="tag now">Current — labeled blocks</div>
+      <div class="frame tall">
+        <div class="hdr"><span class="ttl">Fabric chat</span><span class="cap">chat-1730</span><span class="sp"></span><span class="btn flat">New chat</span></div>
+        <div class="scroll">
+          <div class="blk"><div class="who">You</div><div class="body">explain monads simply</div></div>
+          <div class="blk asst"><div class="who">Fabric</div><div class="body">A monad is a way to wrap a value plus a rule for chaining steps that…</div></div>
+          <div class="blk"><div class="who">You</div><div class="body">simpler?</div></div>
+          <div class="blk asst"><div class="who">Fabric</div><div class="body">Think of a box: you put a value in, and `then` lets you keep working without unpacking it each time.</div></div>
+        </div>
+        <div class="inrow"><input placeholder="Message…"><span class="btn sug">Send</span></div>
+      </div>
+    </div>
+    <div class="col">
+      <div class="tag ai">AI-ish — bubbles + composer</div>
+      <div class="frame tall">
+        <div class="hdr"><span class="ico" style="background:linear-gradient(135deg,var(--accent),var(--accent-dim));color:#10222b">✦</span><span class="ttl">Chat</span><span class="sp"></span><span class="cap">qwen3 · local</span><span class="ico">⋯</span><span class="ico">＋</span></div>
+        <div class="conv">
+          <div class="bub u">explain monads simply</div>
+          <div class="bub a"><div class="role"><span class="dot">✦</span>Fabric</div>A monad is a way to wrap a value plus a rule for chaining steps that keep the wrapping intact.</div>
+          <div class="bub u">simpler?</div>
+          <div class="bub a"><div class="role"><span class="dot">✦</span>Fabric</div>Think of a box: put a value in, and <i>then</i> lets you keep working without unpacking it each time.</div>
+        </div>
+        <div class="composer">
+          <div class="ph">Message Fabric…</div>
+          <div class="row"><span class="meta">⏎ to send · ⇧⏎ newline</span><span class="send">↑</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="notes"><b>What changes (still native widgets):</b>
+    <ul>
+      <li>Labeled <code>You:/Fabric:</code> cards → <b>bubbles</b> (you right + accent, Fabric left, roomy line-height). Reads as a conversation, not a form.</li>
+      <li>Single-line input → a <b>multi-line composer</b> with a round send; model/status demoted to a quiet caption.</li>
+      <li>Less top chrome (icon + name + ⋯/＋). Same <code>text_editor</code>, <code>button</code>, <code>container</code> under the hood.</li>
+    </ul>
+  </div>
+
+  <!-- ===================== QUICK-ACTION ===================== -->
+  <h2>🧰 Quick-action <span style="font-size:13px;color:var(--faint);font-weight:400">(Super+Shift+F on a selection)</span></h2>
+  <div class="h2note">The signature opportunity: type intent, or tap a suggestion. The box can route to a pattern via a meta-prompt.</div>
+  <div class="compare">
+    <div class="col">
+      <div class="tag now">Current — pattern grid</div>
+      <div class="frame" style="height:430px">
+        <div class="qhead"><div class="t">Run on selection</div></div>
+        <div class="sel">"Volcanoes form when molten rock rises through the crust…"</div>
+        <div class="plist">
+          <div class="prow"><span class="pi">⊹</span>Summarize</div>
+          <div class="prow"><span class="pi">💡</span>Explain</div>
+          <div class="prow"><span class="pi">⚖</span>Critique</div>
+          <div class="prow"><span class="pi">✎</span>Draft response</div>
+          <div class="prow"><span class="pi">🌐</span>Translate</div>
+        </div>
+        <div class="ftr"><span class="sp"></span><span class="btn flat">Close</span></div>
+      </div>
+    </div>
+    <div class="col">
+      <div class="tag ai">AI-ish — ask box + suggestions</div>
+      <div class="frame" style="height:430px">
+        <div class="qhead"><div class="t">Act on selection</div></div>
+        <div class="sel">“Volcanoes form when molten rock rises through the crust…” · 312 chars</div>
+        <div class="askbox">
+          <div class="ph">What do you want to do with this?<span class="cur">▌</span></div>
+          <div class="r"><span class="hint">type freely — or pick one below</span><span class="send" style="margin-left:auto">↑</span></div>
+        </div>
+        <div class="sugg">
+          <span class="chip">⊹ Summarize</span><span class="chip">💡 Explain</span>
+          <span class="chip">⚖ Critique</span><span class="chip">✎ Draft response</span>
+          <span class="chip">🌐 Translate</span><span class="chip">⋯ more</span>
+        </div>
+        <div class="ftr"><span class="cap">free text → routed to a pattern automatically</span><span class="sp"></span><span class="btn flat">Esc</span></div>
+      </div>
+    </div>
+  </div>
+  <div class="notes"><b>What changes — and the new idea:</b>
+    <ul>
+      <li>A prominent <b>"What do you want to do with this?"</b> input is the focus; the patterns become <b>suggestion chips</b> below (still one-tap for the common cases).</li>
+      <li><b>Freeform intent → auto-routed to a pattern</b> via a meta-prompt ("make this shorter" → summarize; "rewrite formally" → rewrite). This is the text sibling of the voice loop (intent → pick a pattern).</li>
+      <li>Keeps the fast path (tap a chip) while adding an open-ended path — the most genuinely "AI-ish" interaction, and unique to the kit.</li>
+      <li><b>Cost note:</b> auto-routing adds one tiny classifier call before the run; chips skip it. Worth weighing.</li>
+    </ul>
+  </div>
+
+  <!-- ===================== LOOM ===================== -->
+  <h2>🧵 Loom — stays structured</h2>
+  <div class="notes">
+    The workbench (Run · Library · Models) is a power/config surface — a big input box doesn't fit a configuration console, and dense native widgets are exactly right. <b>No paradigm change.</b> The only worthwhile move here is a <b>polish pass</b> — more whitespace, clearer section hierarchy, consistent control sizing — so it reads modern rather than form-y, while staying 100% native COSMIC. (Not mocked here; it's refinement, not redesign.)
+  </div>
+
+  <div class="notes" style="border-color:var(--accent-dim)">
+    <b>Recommendation.</b> Keep <b>native COSMIC chrome everywhere</b> (the identity + theming + low maintenance). Apply <b>AI-ish layout</b> only where it fits: <b>session</b> (bubbles + composer) and the <b>quick-action ask box</b> (intent → auto-route). Leave the <b>loom structured</b> (polish only). Net: it feels modern and conversational where it should, and integrated/native everywhere — without becoming a bespoke Electron-style app.
+  </div>
+
+  <p class="foot">Mockup · cosmic-fabric · all in the COSMIC dark palette (placeholder emoji = symbolic icons)</p>
+</div>
+</body>
+</html>
