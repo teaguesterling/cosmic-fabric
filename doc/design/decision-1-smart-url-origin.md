@@ -95,14 +95,77 @@ above).
 ## What does NOT change
 
 - `Origin` enum in `workspace.rs` — same 5 variants.
-- `daemon::fetch_url(url, "scrape")` call site at `workspace.rs:321` — same.
 - The kit and session surfaces — they don't touch URLs directly; they get the
   result text from `fetch_url`.
 - The fabric REST flow — `fabric -y` is a separate process, not a `/chat` call.
 
-This is the test of the design: **one Python file changes, one CLI line
-changes, and the user experience changes for the better.** No UI work needed
-under the recommended path.
+## Panel-side toggle (confirmed option b, 2026-05-29)
+
+Original recommendation was (a) CLI-only — the user picked (b) **conditional
+loom toggle**: when the URL the user typed/pasted is detected as
+YouTube-eligible, a small "Transcript / Page" segmented control appears next to
+the URL input (defaults to Transcript). On any other URL, no toggle (no
+clutter on non-YouTube URLs). This means **the detection allow-list lives in
+both the daemon (decides the actual handler) and the panel (decides whether
+to show the toggle)**.
+
+### Rust delta (`workspace.rs`)
+
+```rust
+const YOUTUBE_HOSTS: &[&str] =
+    &["youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"];
+
+fn is_youtube_url(s: &str) -> bool {
+    url::Url::parse(s).ok()
+        .and_then(|u| u.host_str().map(|h| h.to_ascii_lowercase()))
+        .map(|h| YOUTUBE_HOSTS.contains(&h.as_str()))
+        .unwrap_or(false)
+}
+```
+
+State on `Workspace`:
+```rust
+url_force_page: bool,   // false = Transcript (default), true = Page
+```
+
+In the URL origin block (around `workspace.rs:1057`):
+```rust
+if is_youtube_url(&self.url_input) {
+    row = row.push(segmented_control(
+        ["Transcript", "Page"],
+        if self.url_force_page { 1 } else { 0 },
+        Message::SetUrlForcePage,
+    ));
+}
+```
+
+The fetch call site (`workspace.rs:321`) passes the chosen mode:
+```rust
+let mode = if self.url_force_page { "page" } else { "scrape" };  // "scrape" = smart
+daemon::fetch_url(url, mode.into())
+```
+
+(`url` crate already in the dep tree? — if not, hand-roll the host extract;
+five lines, matches the Python `urlparse` path.)
+
+### Allow-list duplication (the cost)
+
+The same set of hostnames exists in `core.py::_SMART_HANDLERS` and
+`workspace.rs::YOUTUBE_HOSTS`. The cost is real but bounded (one set per
+language, ≤10 entries each). To keep them honest, **the daemon is the source of
+truth** — a new daemon op `{op: "smart_url_hosts"}` returns the daemon's host
+list, and the panel fetches it on startup and uses *that* for `is_youtube_url`
+(falling back to a small built-in list if the daemon call fails). The Rust
+constant becomes a fallback, not a parallel source of truth.
+
+```python
+# core.py
+def smart_url_hosts():
+    return sorted(_SMART_HANDLERS.keys())
+```
+
+This is one daemon op + one panel-side fetch — small price for keeping the
+allow-list maintained in one place while preserving (b)'s discoverability win.
 
 ## Failure modes + handling
 
@@ -116,32 +179,15 @@ under the recommended path.
 No partial-output handling: transcripts are short enough that streaming would
 buy nothing.
 
-## Open implementation question — escape-hatch surface
+## Settled — escape-hatch surface
 
-**Q: how does the user force generic scrape when the smart default did the
-wrong thing for them?**
-
-- **(a) CLI-only escape hatch.** `cosmic-fabric fetch <url> --mode page`. The
-  loom URL origin has no toggle — the smart default holds, and power users go
-  to the CLI for the rare override. *Cleanest UI; zero clutter on URLs that
-  aren't YouTube.*
-- **(b) Conditional toggle in the loom.** When the URL origin's text is a
-  detected YouTube URL, a small "Transcript / Page" segmented control appears
-  next to the URL input; on any other URL, no toggle (no clutter). Defaults to
-  Transcript. *More discoverable; adds a conditional widget + detection logic
-  to the Rust side just for showing the toggle, splitting "what's smart" across
-  two languages.*
-
-**Recommendation: (a) CLI-only.** Splitting the detection knowledge into the
-Rust panel just to decide *whether to show a toggle* is exactly the cross-
-language leak the architecture invariant tries to prevent. The recommended UX
-(smart URL, no buttons) is already a tighter promise than (b) implies; if the
-detection picks wrong, the right next iteration is to **fix the detection rule
-in one place** (the daemon's allow-list), not to teach the panel to second-
-guess it. The escape hatch via CLI is honest about the asymmetry — the daemon
-decides; the CLI gives you a knob if the daemon was wrong.
-
-**Confirm:** option (a) — no loom toggle; CLI `--mode page` as the override?
+**Confirmed 2026-05-29:** option (b) **conditional loom toggle** (panel-side
+"Transcript / Page" control, visible only on detected YouTube URLs; default
+Transcript). The cross-language allow-list duplication is real but bounded
+and mitigated by treating the daemon as the source of truth and exposing a
+`smart_url_hosts` op so the panel reads the list rather than redeclaring it.
+The CLI `--mode page` escape hatch still ships — both surfaces gain the
+override.
 
 ## Tests
 

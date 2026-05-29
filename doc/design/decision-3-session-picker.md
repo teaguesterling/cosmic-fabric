@@ -136,8 +136,10 @@ storage and a rename UI for a problem (b) already solves automatically.
 coexist (rename overrides derived label) — so picking (b) now doesn't preclude
 (c) later.
 
-**Confirm:** option (b) — label = truncated first user turn, derived per-
-session at dropdown-open time and cached?
+**Confirmed 2026-05-29:** option (b) — label = `truncate(first user turn, 60)`,
+derived per-session at dropdown-open time, cached in `self.sessions_labeled`
+for the app lifetime; raw name shown as a sub-caption so the user can tell two
+sessions with the same first turn apart.
 
 ## Tests
 

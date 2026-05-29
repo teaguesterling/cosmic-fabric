@@ -129,8 +129,10 @@ six fields; (c) makes the new knobs unusable.
 only, and configuration moves to the row itself. Cleaner mental model: a
 variant is a row, the row has its knobs; "add" is just "make a new empty row."
 
-**Confirm:** option (a) — inline-editable variant rows, with "+ new variant"
-becoming name-only?
+**Confirmed 2026-05-29:** option (a) — inline-editable variant rows; the
+add row collapses to name-only ("+ new variant"), and the six knobs (ctx,
+thinking, temperature, topP, frequencyPenalty, presencePenalty) live on each
+existing row, committing on blur/Enter.
 
 ## Wire format summary (where the names live)
 
