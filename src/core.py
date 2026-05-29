@@ -343,13 +343,14 @@ class FabricClient:
             return {}
 
     def run(self, pattern, user_input, model, vendor, variables=None, options=None,
-            timeout=600, on_chunk=None, model_ctx=None, session=None):
+            timeout=600, on_chunk=None, model_ctx=None, session=None,
+            context=None, strategy=None, language=None, search=False):
         """POST /chat (SSE) → accumulated text. If `on_chunk` is given, it's
-        called with each content fragment as it streams. `model_ctx` sets the
-        requested context window (`modelContextLength`) — used to right-size the
-        Ollama KV cache for large inputs (web pages, files). `session` sets
-        `sessionName` so fabric maintains multi-turn conversation history server-
-        side (the Session surface). Raises on error."""
+        called with each content fragment as it streams. Beyond model/ctx/session,
+        these are all native /chat fields: `variables` ({{vars}} substitution),
+        `context` (a named context prepended), `strategy` (a prompt strategy),
+        `language` (output language code), `search` (model-side web search).
+        Raises on error."""
         prompt = {
             "userInput": user_input,
             "patternName": pattern or "",
@@ -359,13 +360,21 @@ class FabricClient:
         }
         if session:
             prompt["sessionName"] = session
+        if context:
+            prompt["contextName"] = context
+        if strategy:
+            prompt["strategyName"] = strategy
         body = {
             "prompts": [prompt],
             "model": model,
         }
         if model_ctx:
             body["modelContextLength"] = model_ctx
+        if language:
+            body["language"] = language
         body.update(options or {})
+        if search:
+            body["search"] = True  # ChatOptions; after options so it isn't clobbered
         req = urllib.request.Request(self.url + "/chat", data=json.dumps(body).encode(),
                                      headers={"Content-Type": "application/json"})
         out, raw_seen, err = [], 0, None

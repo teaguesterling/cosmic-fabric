@@ -23,7 +23,8 @@ import sys
 USAGE = (
     "usage: cosmic-fabric <command>\n"
     "  run <pattern> [text]      run a pattern (text from args or stdin) → result\n"
-    "  assemble <pattern> [text] render a pattern's prompt (no model run)\n"
+    "      [-v k=v] [-C ctx] [--strategy s] [-g lang] [--search]\n"
+    "  assemble <pattern> [text] render a pattern's prompt (no model run; [-v k=v])\n"
     "  fetch <url>               fetch a web page as markdown\n"
     "  patterns [--all]          your curated active-set (or every pattern)\n"
     "  models                    configured vendors → models\n"
@@ -60,6 +61,34 @@ def _text(rest):
     return " ".join(rest) if rest else (sys.stdin.read() if not sys.stdin.isatty() else "")
 
 
+def _parse_flags(args):
+    """Split run/assemble args into (positionals, request-extras). Recognizes the
+    native /chat knobs as flags anywhere in the arg list; everything else is a
+    positional (pattern, then text words)."""
+    pos, out = [], {}
+    variables = {}
+    i = 0
+    while i < len(args):
+        a = args[i]
+        nxt = args[i + 1] if i + 1 < len(args) else None
+        if a in ("-v", "--var") and nxt is not None:
+            k, _, v = nxt.partition("="); variables[k] = v; i += 2; continue
+        if a.startswith("--var="):
+            k, _, v = a[6:].partition("="); variables[k] = v; i += 1; continue
+        if a in ("-C", "--context") and nxt is not None:
+            out["context"] = nxt; i += 2; continue
+        if a == "--strategy" and nxt is not None:
+            out["strategy"] = nxt; i += 2; continue
+        if a in ("-g", "--lang", "--language") and nxt is not None:
+            out["language"] = nxt; i += 2; continue
+        if a == "--search":
+            out["search"] = True; i += 1; continue
+        pos.append(a); i += 1
+    if variables:
+        out["variables"] = variables
+    return pos, out
+
+
 def main(argv):
     if not argv or argv[0] in ("-h", "--help", "help"):
         print(USAGE)
@@ -80,9 +109,18 @@ def main(argv):
     elif cmd == "models":
         print(json.dumps(call({"op": "models"}).get("vendors", {}), indent=2))
     elif cmd in ("run", "assemble"):
-        if not rest:
-            sys.exit(f"usage: cosmic-fabric {cmd} <pattern> [text]   (or pipe text on stdin)")
-        req = {"op": cmd if cmd == "assemble" else "run", "pattern": rest[0], "input": _text(rest[1:])}
+        pos, extra = _parse_flags(rest)
+        if not pos:
+            sys.exit(f"usage: cosmic-fabric {cmd} <pattern> [text] "
+                     "[-v k=v] [-C context] [--strategy s] [-g lang] [--search]")
+        req = {"op": cmd if cmd == "assemble" else "run",
+               "pattern": pos[0], "input": _text(pos[1:])}
+        if "variables" in extra:
+            req["variables"] = extra["variables"]
+        if cmd == "run":  # assemble only does {{var}} substitution; the rest are model-time
+            for k in ("context", "strategy", "language", "search"):
+                if k in extra:
+                    req[k] = extra[k]
         r = call(req)
         if r.get("error"):
             sys.exit("error: " + r["error"])
