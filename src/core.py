@@ -7,6 +7,7 @@ purpose. The launcher does NOT import this — it talks to the daemon over a soc
 import json
 import os
 import re
+import socket
 import subprocess
 import time
 import urllib.request
@@ -193,16 +194,68 @@ def extra_to_options(extra):
 
 # ---------- fabric REST client ---------------------------------------------
 # Where the daemon runs fabric's REST API. fabric --serve defaults --address to
-# ":8080" (= 0.0.0.0, all interfaces) — exposing the API + your keys on the LAN —
-# so we pin it to loopback AND off the heavily-collided 8080 (proxies, dev
-# servers). 28080 is below the ephemeral range (32768+, no bind race), uncommon,
-# and recognizably "8080 relocated". Override with COSMIC_FABRIC_ADDRESS.
-FABRIC_ADDRESS = os.environ.get("COSMIC_FABRIC_ADDRESS", "127.0.0.1:28080")
+# ":8080" (= 0.0.0.0, all interfaces) — exposing the API + your keys on the LAN.
+# We always pin it to **loopback**, and by default to a **random free port** (the
+# daemon is fabric's only client + its spawner, so nothing else needs to discover
+# it). The chosen port is persisted so a daemon restart reuses the live fabric
+# instead of orphaning it. Override with COSMIC_FABRIC_ADDRESS=127.0.0.1:PORT.
+
+
+def _free_port():
+    """Ask the OS for an unused loopback TCP port."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+    finally:
+        s.close()
+
+
+def _fabric_responds(addr, timeout=1.0):
+    try:
+        with urllib.request.urlopen(f"http://{addr}/patterns/names", timeout=timeout):
+            return True
+    except Exception:
+        return False
+
+
+def _port_file():
+    base = os.environ.get("XDG_RUNTIME_DIR") or os.path.expanduser("~/.cache/cosmic-fabric")
+    try:
+        os.makedirs(base, exist_ok=True)
+    except OSError:
+        pass
+    return os.path.join(base, "cosmic-fabric.fabric-addr")
+
+
+def resolve_fabric_address():
+    """The fabric --serve address (always loopback). Precedence:
+    1) $COSMIC_FABRIC_ADDRESS (explicit override);
+    2) the port from a prior run, if a fabric still answers there (reuse — no
+       orphaned instance on restart);
+    3) a fresh OS-assigned free port (persisted for next time)."""
+    env = os.environ.get("COSMIC_FABRIC_ADDRESS")
+    if env:
+        return env
+    pf = _port_file()
+    try:
+        prev = open(pf).read().strip()
+        if prev and _fabric_responds(prev):
+            return prev
+    except Exception:
+        pass
+    addr = f"127.0.0.1:{_free_port()}"
+    try:
+        open(pf, "w").write(addr)
+    except OSError:
+        pass
+    return addr
 
 
 class FabricClient:
     def __init__(self, url=None, log=lambda m: None):
-        self.url = (url or f"http://{FABRIC_ADDRESS}").rstrip("/")
+        # Default to the resolved (random/persisted) loopback address.
+        self.url = (url or f"http://{resolve_fabric_address()}").rstrip("/")
         self.log = log
 
     def _get(self, path, timeout=5):
@@ -221,9 +274,10 @@ class FabricClient:
             return True
         env = dict(os.environ)
         env["PATH"] = os.path.expanduser("~/.local/bin") + os.pathsep + env.get("PATH", "")
-        self.log(f"fabric --serve not up; starting it on {FABRIC_ADDRESS}")
+        address = self.url.split("//", 1)[-1]  # "127.0.0.1:PORT" — bind here (loopback)
+        self.log(f"fabric --serve not up; starting it on {address}")
         try:
-            subprocess.Popen(["fabric", "--serve", "--address", FABRIC_ADDRESS],
+            subprocess.Popen(["fabric", "--serve", "--address", address],
                              env=env, start_new_session=True,
                              stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception as e:

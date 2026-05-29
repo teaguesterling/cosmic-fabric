@@ -84,7 +84,7 @@ raises rate limits), etc.
 fabric --listvendors      # vendors fabric knows
 fabric -L                 # models actually reachable (i.e. keyed)
 fabric --liststrategies   # should be non-empty after setup
-fabric --serve            # start the REST API (the daemon pins it to 127.0.0.1:28080)
+fabric --serve            # the daemon runs this for you, on a random free loopback port
 ```
 
 If a vendor isn't in `fabric -L`, its key isn't set — re-run `fabric --setup`.
@@ -184,11 +184,13 @@ The daemon re-reads `policy.toml` per run, so edits take effect immediately.
   → Shortcuts → Custom.
 - **A vendor's models are missing** — its key isn't set; `fabric --setup`.
 - **Is fabric exposed on the network?** The daemon binds `fabric --serve` to
-  **`127.0.0.1:28080`** (loopback only, and off the heavily-collided 8080) — its
-  REST API holds your API keys, so it must not be LAN-reachable. Check:
-  `ss -tlnp | grep :28080` should show `127.0.0.1:28080`, not `*`/`0.0.0.0`.
-  (fabric's own default is `:8080` = all interfaces; we override both host and
-  port. Change it with `COSMIC_FABRIC_ADDRESS=127.0.0.1:PORT`.) If you *want* LAN
-  access, do it deliberately — `--address 0.0.0.0:PORT` **with** `--api-key`.
+  **loopback on a random free port** (its REST API holds your API keys, so it must
+  not be LAN-reachable; a random port also avoids collisions). The chosen address
+  is in `$XDG_RUNTIME_DIR/cosmic-fabric.fabric-addr` and reused across daemon
+  restarts. Check it's loopback: `ss -tlnp | grep fabric` should show
+  `127.0.0.1:<port>`, never `*`/`0.0.0.0`. (fabric's own default is `:8080` = all
+  interfaces; we override host + port.) Pin a fixed port with
+  `COSMIC_FABRIC_ADDRESS=127.0.0.1:PORT`; for deliberate LAN access use
+  `--address 0.0.0.0:PORT` **with** `--api-key`.
 - **Settings/model changes not taking** — the daemon re-reads per run; for the
   panel's curated list, reopen the popup.
