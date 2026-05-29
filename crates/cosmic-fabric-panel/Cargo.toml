@@ -11,6 +11,8 @@ path = "src/main.rs"
 
 [lib]
 path = "src/lib.rs"
+doctest = false   # no doctests in this crate; skip them so `cargo test` doesn't
+                  # invoke rustdoc (broken in some toolchains: missing libLLVM)
 
 [dependencies]
 # Pinned to the same libcosmic rev as cosmic-display-control (cached on-box, known-good API).
