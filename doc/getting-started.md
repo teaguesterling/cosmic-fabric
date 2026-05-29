@@ -155,6 +155,10 @@ The daemon re-reads `policy.toml` per run, so edits take effect immediately.
 - **Loom (power/config):** `cosmic-fabric-panel window` — Run a source→pattern→
   result, curate in Library, configure in Models.
 - **Session (chat):** `cosmic-fabric-panel session` — multi-turn.
+- **Scripts (CLI):** `cosmic-fabric` — a thin client of the daemon socket, so you
+  get the *orchestrated* deployment: `echo text | cosmic-fabric run scribe-summarize`,
+  `cosmic-fabric assemble <pattern>`, `cosmic-fabric fetch <url>`,
+  `cosmic-fabric patterns`. For raw fabric, `FABRIC_API="$(cosmic-fabric fabric-url)"`.
 
 > **New here?** Walk through the hands-on [`tutorial.md`](tutorial.md) — your first
 > 30 minutes, doing one real task per surface.

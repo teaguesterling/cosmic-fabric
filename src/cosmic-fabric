@@ -1,0 +1,103 @@
+#!/usr/bin/env python3
+"""cosmic-fabric — a tiny scriptable CLI over the `cosmic-fabricd` unix socket
+(the "4th surface"). This is how other tools/scripts should use the deployment:
+it goes through the daemon, so you get the **orchestrated** behavior (policy,
+the curated active-set, the capability rule, context sizing) — not raw fabric.
+
+  echo "long text" | cosmic-fabric run scribe-summarize   # → result (stdout)
+  cosmic-fabric assemble scribe-explain < notes.txt        # → rendered prompt
+  cosmic-fabric fetch https://example.com                   # → page as markdown
+  cosmic-fabric patterns | fzf                              # your active set
+  cosmic-fabric status
+
+`fabric-url` is the escape hatch for talking to the underlying fabric REST API
+directly (loopback) — only if you specifically need vanilla fabric:
+
+  FABRIC_API="$(cosmic-fabric fabric-url)"   # e.g. http://127.0.0.1:PORT
+"""
+import json
+import os
+import socket
+import sys
+
+USAGE = (
+    "usage: cosmic-fabric <command>\n"
+    "  run <pattern> [text]      run a pattern (text from args or stdin) → result\n"
+    "  assemble <pattern> [text] render a pattern's prompt (no model run)\n"
+    "  fetch <url>               fetch a web page as markdown\n"
+    "  patterns [--all]          your curated active-set (or every pattern)\n"
+    "  models                    configured vendors → models\n"
+    "  status | ping             daemon + fabric health\n"
+    "  fabric-url                the underlying fabric REST URL (escape hatch)\n"
+)
+
+
+def sock_path():
+    base = os.environ.get("XDG_RUNTIME_DIR") or os.path.expanduser("~/.cache/cosmic-fabric")
+    return os.path.join(base, "cosmic-fabric.sock")
+
+
+def call(req, timeout=600):
+    s = socket.socket(socket.AF_UNIX)
+    s.settimeout(timeout)
+    try:
+        s.connect(sock_path())
+    except OSError as e:
+        sys.exit(f"cosmic-fabricd not reachable ({e}). Is the daemon running?")
+    s.sendall((json.dumps(req) + "\n").encode())
+    buf = b""
+    while not buf.endswith(b"\n"):
+        chunk = s.recv(65536)
+        if not chunk:
+            break
+        buf += chunk
+    s.close()
+    return json.loads(buf.decode() or "{}")
+
+
+def _text(rest):
+    """Input text: the trailing args joined, else stdin."""
+    return " ".join(rest) if rest else (sys.stdin.read() if not sys.stdin.isatty() else "")
+
+
+def main(argv):
+    if not argv or argv[0] in ("-h", "--help", "help"):
+        print(USAGE)
+        return 0 if argv else 2
+    cmd, rest = argv[0], argv[1:]
+
+    if cmd in ("fabric-url", "url"):
+        print(call({"op": "fabric_url"}).get("url", ""))
+    elif cmd == "ping":
+        print(json.dumps(call({"op": "ping"})))
+    elif cmd == "status":
+        print(json.dumps(call({"op": "status"}), indent=2))
+    elif cmd == "patterns":
+        if "--all" in rest:
+            print("\n".join(call({"op": "patterns"}).get("patterns", [])))
+        else:
+            print("\n".join(call({"op": "surface"}).get("active", [])))
+    elif cmd == "models":
+        print(json.dumps(call({"op": "models"}).get("vendors", {}), indent=2))
+    elif cmd in ("run", "assemble"):
+        if not rest:
+            sys.exit(f"usage: cosmic-fabric {cmd} <pattern> [text]   (or pipe text on stdin)")
+        req = {"op": cmd if cmd == "assemble" else "run", "pattern": rest[0], "input": _text(rest[1:])}
+        r = call(req)
+        if r.get("error"):
+            sys.exit("error: " + r["error"])
+        print(r.get("prompt" if cmd == "assemble" else "output", ""))
+    elif cmd == "fetch":
+        if not rest:
+            sys.exit("usage: cosmic-fabric fetch <url>")
+        r = call({"op": "fetch", "url": rest[0]})
+        if r.get("error"):
+            sys.exit("error: " + r["error"])
+        print(r.get("text", ""))
+    else:
+        sys.exit(f"unknown command: {cmd}\n\n{USAGE}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

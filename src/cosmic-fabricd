@@ -87,6 +87,10 @@ def handle(req):
     op = req.get("op")
     if op == "ping":
         return {"ok": True, "serve": FAB.alive()}
+    if op == "fabric_url":
+        # The live fabric REST base URL (loopback). Escape hatch for tools that
+        # want raw fabric — most callers should use the ops above instead.
+        return {"url": FAB.url}
     if op == "patterns":
         global _pat_cache
         with _lock:
