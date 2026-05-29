@@ -192,14 +192,17 @@ def extra_to_options(extra):
 
 
 # ---------- fabric REST client ---------------------------------------------
-# fabric --serve defaults --address to ":8080" (= 0.0.0.0, all interfaces),
-# exposing the API (and your keys) on the LAN. We pin it to loopback.
-FABRIC_ADDRESS = "127.0.0.1:8080"
+# Where the daemon runs fabric's REST API. fabric --serve defaults --address to
+# ":8080" (= 0.0.0.0, all interfaces) — exposing the API + your keys on the LAN —
+# so we pin it to loopback AND off the heavily-collided 8080 (proxies, dev
+# servers). 28080 is below the ephemeral range (32768+, no bind race), uncommon,
+# and recognizably "8080 relocated". Override with COSMIC_FABRIC_ADDRESS.
+FABRIC_ADDRESS = os.environ.get("COSMIC_FABRIC_ADDRESS", "127.0.0.1:28080")
 
 
 class FabricClient:
-    def __init__(self, url="http://127.0.0.1:8080", log=lambda m: None):
-        self.url = url.rstrip("/")
+    def __init__(self, url=None, log=lambda m: None):
+        self.url = (url or f"http://{FABRIC_ADDRESS}").rstrip("/")
         self.log = log
 
     def _get(self, path, timeout=5):
