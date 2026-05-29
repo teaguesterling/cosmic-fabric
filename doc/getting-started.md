@@ -156,6 +156,9 @@ The daemon re-reads `policy.toml` per run, so edits take effect immediately.
   result, curate in Library, configure in Models.
 - **Session (chat):** `cosmic-fabric-panel session` — multi-turn.
 
+> **New here?** Walk through the hands-on [`tutorial.md`](tutorial.md) — your first
+> 30 minutes, doing one real task per surface.
+
 ## 6 · Capability cheat-sheet (what works, what needs a key)
 
 | capability | needs | how it surfaces |

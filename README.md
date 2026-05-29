@@ -14,7 +14,7 @@ goo are siblings: both speak to fabric, neither depends on the other. The launch
 plugin uses pop-launcher's protocol — the same surface a future goo meta-plugin
 would target — with zero goo dependency.
 
-🚀 **[Getting started](doc/getting-started.md)** · 📖 **[User manual](doc/manual.md)** · 🏗 **[Design & roadmap](doc/design.md)**
+🚀 **[Getting started](doc/getting-started.md)** · 🎓 **[Tutorial](doc/tutorial.md)** · 📖 **[User manual](doc/manual.md)** · 🏗 **[Design & roadmap](doc/design.md)**
 
 ## Quickstart
 
