@@ -104,6 +104,36 @@ The launcher speaks pop-launcher's line-JSON — the *same surface* a future goo
 meta-plugin would target — with zero goo dependency. They coexist on the launcher;
 neither needs the other.
 
+## UI configurability — the principle (mockup: `ui-style-comparison.html`)
+
+**The test for any UI toggle: does it change what you can *do*, or just how it
+*looks*?** Configure **behavior**, never **aesthetics**.
+
+- **Aesthetics are not configurable.** Look (bubbles vs cards as pure rendering,
+  spacing, density) → *pick the good one and commit*. A look-toggle is two render
+  paths to build/test/maintain forever for marginal value — doubly costly here
+  since the GUI can't be click-tested headlessly, and "make it configurable" is
+  often how a product avoids deciding. Be opinionated.
+- **Look that *should* be user-controlled is COSMIC's job**, not ours — accent,
+  light/dark, density come from the system theme. Being native means inheriting
+  that for free; reinventing it in-app is the un-native move.
+- **Behavior is a fair toggle** — but still ship an opinionated **default** and
+  add the switch only on **validated demand** (don't pre-build both paths).
+
+**Identified behavioral-toggle candidates** (deferred; defaults first):
+
+1. **Quick-access mode** — **ask-box** (type intent → auto-routed to a pattern via
+   a meta-prompt) vs **popup** (pick from the pattern menu). Different interaction
+   *and* a cost axis (ask-box adds a classifier call; popup is free).
+2. **Session mode** — **chat / simple** (clean bubbles, conversational) vs
+   **transcript / detailed** (per-message metadata — model · timing — and
+   per-message actions: copy / regenerate / send-to). Different affordances + info
+   density, not just paint.
+
+Both pass the test (they change what you do). Each ships one default; the toggle
+lands if real demand appears. Content config (active-set, model instantiations,
+send-to destinations) is the configurability that already pays off.
+
 ## Workspace window + polymorphic source/response (designed; mockup: `panel-mockup.html`)
 
 Beyond the popup's fast path, a real **workspace window** (`cosmic-fabric-panel
