@@ -77,7 +77,7 @@ show the **transform** that feeds the prompt (`→ N chars markdown`). Mocked in
 | the panel | review a result without a window | launcher → broadcast → panel pane | ✅ broker |
 | **hand off to an agent** (Claude Desktop/Code) | assemble a prompt, continue in a full agent | render prompt (no run) → stage → open the agent | 🔶 clipboard stub; real route = goo (deferred) |
 | **TTS** (`--list-gemini-voices`) | read the result aloud; back half of the voice loop | a "speak" destination | ⬜ 🔬 |
-| **image generation** (`--image-file`) | "make a diagram/illustration" | image-gen pattern → image result (polymorphic response) | ⬜ 🔬 |
+| **image generation** (`--image-file`) | "make a diagram/illustration" | image-gen pattern → image result (polymorphic response) | ⬜ **no models available.** fabric image-gen is **cloud-only** (OpenAI/Gemini, both unkeyed); no local diffusion on the box. A local generator (ComfyUI/SD) is a **separate integration**, not a fabric feature — see roadmap |
 
 Send-to is a **customizable destination registry** (Copy default + Save now;
 Claude/Alpaca shown disabled until a real route exists). ✅ per-artifact dropdowns.
@@ -133,7 +133,18 @@ on Wayland — the hotkey+selection path is the feasible equivalent.*
 4. **Audio in / TTS out** (§3 audio + §4 TTS) — the voice loop; fabric does STT
    (`--transcribe-file`) + TTS natively. 🔬
 5. **Contexts & strategies** (§6) — reusable background + CoT strategies.
-6. **goo routing** (real agent hand-off, §4) — when goo's route layer exists.
+6. **Image generation** — two distinct paths: **(a) cloud via fabric** — add an
+   OpenAI/Gemini key, then `--image-file` + a polymorphic image-*response* card;
+   **(b) local, *non-fabric*** — a separate integration talking to a local
+   ComfyUI/Automatic1111 server's API (fabric won't proxy it). (a) is small once
+   keyed; (b) is real new plumbing (its own source/destination), worth it only if
+   local image-gen matters.
+7. **goo routing** (real agent hand-off, §4) — when goo's route layer exists.
+
+> **The IN/OUT asymmetry.** Images *in* (vision) run **locally** today
+> (`llama3.2-vision`), free and private. Images *out* (generation) are
+> **cloud-only through fabric** — there's no local-via-fabric path, so local
+> image-gen means standing up + integrating a separate generator (roadmap 6b).
 
 ## Mockups
 
@@ -167,7 +178,7 @@ What the box can actually do, tested on-device:
 |---|---|---|
 | **Vision** | ✅ **works, locally** | `llama3.2-vision:latest` (7.8 GB, fits the 11 GB GPU; accurately described a screenshot via `fabric -a`). Also available via **Anthropic** claude (vision-capable, already keyed). **Roadmap item 3 (image source + capability rule) can proceed now.** |
 | **Audio / STT** | ⬜ blocked on a key | fabric's transcription models are **OpenAI-only** (`whisper-1`, `gpt-4o-transcribe`) — no local option. Needs an **OpenAI key**. |
-| **Image generation** | ⬜ blocked on a key | needs **OpenAI** (`gpt-image`/dall-e) or **Gemini**. |
+| **Image generation** | ⬜ no models at all | cloud (OpenAI/Gemini) unkeyed **and** no local generator (Ollama is LLM-only; no ComfyUI/SD on the box). fabric image-gen is cloud-only. |
 | **TTS** | ⬜ blocked on a key | Gemini voices listed, but needs a **Gemini key**. |
 
 **Configured vendors:** Anthropic (keyed) + Ollama (local). **In fabric's

@@ -190,7 +190,7 @@
       <div class="row" data-status="built"><div class="feat">the panel<span class="st"><span class="dot built"></span>built</span></div><div class="use"><span class="lbl">desktop use</span>review without a window</div><div class="env"><span class="lbl">envisioned · status</span>launcher → broadcast → panel pane (broker).</div></div>
       <div class="row" data-status="partial"><div class="feat">agent hand-off (Claude)<span class="st"><span class="dot partial"></span>stub</span></div><div class="use"><span class="lbl">desktop use</span>assemble a prompt, continue in a full agent</div><div class="env"><span class="lbl">envisioned · status</span>render prompt → stage → open the agent. Clipboard stub; real route = goo (deferred).</div></div>
       <div class="row" data-status="planned"><div class="feat">TTS<span class="st"><span class="dot planned"></span>needs Gemini key</span></div><div class="use"><span class="lbl">desktop use</span>read the result aloud</div><div class="env"><span class="lbl">envisioned · status</span>a "speak" destination.</div></div>
-      <div class="row" data-status="planned"><div class="feat">image generation<span class="st"><span class="dot planned"></span>needs OpenAI/Gemini</span></div><div class="use"><span class="lbl">desktop use</span>"make a diagram/illustration"</div><div class="env"><span class="lbl">envisioned · status</span>image-gen pattern → image result (polymorphic response).</div></div>
+      <div class="row" data-status="planned"><div class="feat">image generation<span class="st"><span class="dot planned"></span>no models</span></div><div class="use"><span class="lbl">desktop use</span>"make a diagram/illustration"</div><div class="env"><span class="lbl">envisioned · status</span><b>no models available</b> — fabric image-gen is <b>cloud-only</b> (OpenAI/Gemini, unkeyed); no local diffusion on the box. Local (ComfyUI/SD) = a separate non-fabric integration (roadmap 6b).</div></div>
       <div class="gnote">Send-to is a customizable <b>destination registry</b> (Copy default + Save now; Claude/Alpaca disabled until a route exists). Per-artifact dropdowns.</div>
     </div></div>
 
@@ -229,7 +229,7 @@
     <tr><th>capability</th><th>verdict</th><th>needs</th></tr>
     <tr><td><b>Vision</b></td><td style="color:var(--good)">✅ works, locally</td><td><code>llama3.2-vision</code> (7.8 GB, fits the GPU) or Anthropic claude. Backend + capability rule built.</td></tr>
     <tr><td><b>Audio / STT</b></td><td style="color:var(--warn)">⬜ blocked on a key</td><td>fabric transcription is <b>OpenAI-only</b> — needs an OpenAI key.</td></tr>
-    <tr><td><b>Image generation</b></td><td style="color:var(--warn)">⬜ blocked on a key</td><td><b>OpenAI</b> or <b>Gemini</b>.</td></tr>
+    <tr><td><b>Image generation</b></td><td style="color:var(--warn)">⬜ no models at all</td><td>cloud (OpenAI/Gemini) unkeyed <b>and</b> no local generator — Ollama is LLM-only, no ComfyUI/SD. fabric image-gen is cloud-only.</td></tr>
     <tr><td><b>TTS</b></td><td style="color:var(--warn)">⬜ blocked on a key</td><td><b>Gemini</b>.</td></tr>
   </table>
   <p class="sub">Configured: Anthropic + Ollama. Unkeyed in fabric's registry: Gemini, OpenAI (+~26). <b>OpenAI</b> → STT + image-gen; <b>Gemini</b> → TTS + image-gen + Google models. "Antigravity" is not a fabric vendor — use Gemini for Google.</p>
@@ -265,8 +265,10 @@
     <li><b>Capability rule + image source</b> — rule + backend <b style="color:var(--good)">done</b>; path-based <b>Image source wired into the loom</b>. Remaining: native picker/thumbnail + click-validation.</li>
     <li><b>Audio in / TTS out</b> — the voice loop (fabric does STT + TTS natively). Needs keys.</li>
     <li><b>Contexts &amp; strategies</b> — reusable background + CoT strategies.</li>
+    <li><b>Image generation</b> — two paths: <b>(a) cloud via fabric</b> (add an OpenAI/Gemini key → <code>--image-file</code> + a polymorphic image-response card; small); <b>(b) local, non-fabric</b> (a separate integration to a local ComfyUI/A1111 API — fabric won't proxy it; real new plumbing).</li>
     <li><b>goo routing</b> — real agent hand-off, when goo's route layer exists.</li>
   </ul>
+  <div class="shape" style="margin-top:12px"><b>The IN/OUT asymmetry.</b> Images <i>in</i> (vision) run <b>locally</b> today (<code>llama3.2-vision</code>), free + private. Images <i>out</i> (generation) are <b>cloud-only through fabric</b> — no local-via-fabric path, so local image-gen means a separate generator integration (roadmap 6b).</div>
 
   <div class="goo">
     <span class="tag">APPENDIX · goo — isolated, aspirational, out of scope</span>
