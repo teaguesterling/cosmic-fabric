@@ -11,6 +11,9 @@ pub fn path() -> PathBuf {
 }
 
 /// A deployment instantiation of a model: params that override/extend the base.
+/// `temperature`/`top_p`/penalties are pure sampling knobs (variant-typed, not
+/// per-run sliders — see `doc/design/decision-2-sampling-as-variant-fields.md`).
+/// `None` = "use the model default, don't send the field."
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Variant {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -19,6 +22,12 @@ pub struct Variant {
     pub thinking: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_p: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frequency_penalty: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presence_penalty: Option<f32>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extra: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

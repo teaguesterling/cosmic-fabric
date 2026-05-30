@@ -61,8 +61,12 @@ def resolve_model(pattern, pol):
     return c.get("model"), c.get("vendor"), c.get("extra", []) or []
 
 
-_INST_KEYS = ("model", "vendor", "ctx", "thinking", "temperature", "extra", "capabilities")
-_VARIANT_PARAMS = ("ctx", "thinking", "temperature", "extra")
+_INST_KEYS = ("model", "vendor", "ctx", "thinking", "temperature",
+              "top_p", "frequency_penalty", "presence_penalty",
+              "extra", "capabilities")
+_VARIANT_PARAMS = ("ctx", "thinking", "temperature",
+                   "top_p", "frequency_penalty", "presence_penalty",
+                   "extra")
 
 
 def _resolve_use(use, models):
@@ -136,6 +140,9 @@ def resolve(pattern, pol, need_capability=None):
         "ctx": inst.get("ctx"),
         "thinking": inst.get("thinking"),
         "temperature": inst.get("temperature"),
+        "top_p": inst.get("top_p"),
+        "frequency_penalty": inst.get("frequency_penalty"),
+        "presence_penalty": inst.get("presence_penalty"),
         "extra": list(inst.get("extra", []) or []),
         "capabilities": list(inst.get("capabilities", []) or []),
         "categories": list(inst.get("categories", []) or []),
@@ -144,7 +151,8 @@ def resolve(pattern, pol, need_capability=None):
 
 def inst_to_options(inst):
     """Instantiation params → ChatRequest options. Typed fields (thinking,
-    temperature) plus `extra` passthrough (CLI-style flags)."""
+    temperature, sampling) plus `extra` passthrough (CLI-style flags). Snake-
+    case instantiation keys map to fabric's camelCase ChatOptions JSON tags."""
     opt = extra_to_options(inst.get("extra", []) or [])
     th = inst.get("thinking")
     if th is not None:
@@ -156,6 +164,17 @@ def inst_to_options(inst):
     if inst.get("temperature") is not None:
         try:
             opt["temperature"] = float(inst["temperature"])
+        except (TypeError, ValueError):
+            pass
+    # Sampling knobs (variant-typed, per decision 2). snake_case → camelCase.
+    for src, dst in (("top_p", "topP"),
+                     ("frequency_penalty", "frequencyPenalty"),
+                     ("presence_penalty", "presencePenalty")):
+        v = inst.get(src)
+        if v is None:
+            continue
+        try:
+            opt[dst] = float(v)
         except (TypeError, ValueError):
             pass
     return opt
@@ -175,8 +194,16 @@ def pick_ctx(input_text, gen_margin=1024, tiers=(2048, 8192, 16384, 32768)):
 
 def extra_to_options(extra):
     """Translate the policy's CLI-style `extra` flags into ChatRequest fields,
-    so existing policy.toml keeps working over REST."""
+    so existing policy.toml keeps working over REST. Flag names mirror fabric's
+    own CLI (verified from `fabric -h`)."""
     opt = {}
+    # (cli flag prefix, ChatOptions key, parser) — ordered for predictable behavior.
+    _FLOAT_FLAGS = (
+        ("--temperature=",       "temperature",      float),
+        ("--topp=",              "topP",             float),
+        ("--frequencypenalty=",  "frequencyPenalty", float),
+        ("--presencepenalty=",   "presencePenalty",  float),
+    )
     for tok in extra:
         if tok.startswith("--thinking="):
             opt["thinking"] = tok.split("=", 1)[1]
@@ -184,11 +211,14 @@ def extra_to_options(extra):
             opt["suppressThink"] = True
         elif tok == "--raw":
             opt["raw"] = True
-        elif tok.startswith("--temperature="):
-            try:
-                opt["temperature"] = float(tok.split("=", 1)[1])
-            except ValueError:
-                pass
+        else:
+            for prefix, key, cast in _FLOAT_FLAGS:
+                if tok.startswith(prefix):
+                    try:
+                        opt[key] = cast(tok.split("=", 1)[1])
+                    except ValueError:
+                        pass
+                    break
     return opt
 
 

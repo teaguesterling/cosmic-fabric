@@ -100,6 +100,27 @@ class Resolve(unittest.TestCase):
         r = core.resolve("p", self._pol({"use": "ghost"}))
         self.assertIsNone(r["model"])  # nothing else to fall back to
 
+    def test_sampling_carries_through_variant(self):
+        # snake_case sampling fields on a variant flow through resolve → inst.
+        models = {
+            "spicy": {
+                "vendor": "Ollama", "model": "x:1b",
+                "default": "hot",
+                "variants": {"hot": {"top_p": 0.8, "frequency_penalty": 0.5,
+                                     "presence_penalty": 0.3}},
+            },
+        }
+        r = core.resolve("p", {"default": {"use": "spicy"}, "patterns": {},
+                               "models": models})
+        self.assertAlmostEqual(r["top_p"], 0.8)
+        self.assertAlmostEqual(r["frequency_penalty"], 0.5)
+        self.assertAlmostEqual(r["presence_penalty"], 0.3)
+        # and they emit on the wire:
+        o = core.inst_to_options(r)
+        self.assertAlmostEqual(o["topP"], 0.8)
+        self.assertAlmostEqual(o["frequencyPenalty"], 0.5)
+        self.assertAlmostEqual(o["presencePenalty"], 0.3)
+
 
 class CapabilityRule(unittest.TestCase):
     def _pol(self):
@@ -148,6 +169,29 @@ class InstToOptions(unittest.TestCase):
         o = core.inst_to_options({"extra": ["--suppress-think", "--temperature=0.7"]})
         self.assertTrue(o["suppressThink"])
         self.assertAlmostEqual(o["temperature"], 0.7)
+
+    def test_emits_sampling_knobs(self):
+        # snake_case inst keys → camelCase ChatOptions keys (decision 2).
+        o = core.inst_to_options({"top_p": 0.9, "frequency_penalty": 0.1,
+                                  "presence_penalty": 0.2})
+        self.assertAlmostEqual(o["topP"], 0.9)
+        self.assertAlmostEqual(o["frequencyPenalty"], 0.1)
+        self.assertAlmostEqual(o["presencePenalty"], 0.2)
+
+    def test_skips_none_sampling_knobs(self):
+        # None means "use the model default"; the keys must not appear at all.
+        o = core.inst_to_options({"top_p": None, "frequency_penalty": None,
+                                  "presence_penalty": None, "temperature": None})
+        for k in ("topP", "frequencyPenalty", "presencePenalty", "temperature"):
+            self.assertNotIn(k, o)
+
+    def test_extra_to_options_legacy_sampling_flags(self):
+        # fabric CLI flag names (verified from `fabric -h`) pass through.
+        opt = core.extra_to_options(["--topp=0.85", "--presencepenalty=0.1",
+                                     "--frequencypenalty=0.3"])
+        self.assertAlmostEqual(opt["topP"], 0.85)
+        self.assertAlmostEqual(opt["presencePenalty"], 0.1)
+        self.assertAlmostEqual(opt["frequencyPenalty"], 0.3)
 
 
 class HtmlToText(unittest.TestCase):

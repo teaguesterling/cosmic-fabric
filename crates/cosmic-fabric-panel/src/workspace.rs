@@ -31,8 +31,96 @@ pub const WORKSPACE_APP_ID: &str = "com.github.teaguesterling.CosmicFabric.Works
 /// global default model."
 const DEFAULT_VENDOR: &str = "Default";
 
-/// New-variant `thinking` dropdown: index 0 = inherit/none, 1 = off, 2 = on.
+/// `thinking` dropdown values: index 0 = inherit/none, 1 = off, 2 = on. Used
+/// both on the (collapsed) add-variant row and the per-variant inline editor.
 const THINKING_OPTS: [&str; 3] = ["(default)", "off", "on"];
+
+/// Per-variant numeric knobs the user can edit inline (decision 2). `Ctx` is
+/// u32; the others are f32. `thinking` is a dropdown, not part of this enum.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum VariantField {
+    Ctx,
+    Temperature,
+    TopP,
+    FrequencyPenalty,
+    PresencePenalty,
+}
+
+/// Text the user has typed into a variant's inline editor, kept in
+/// `Workspace::variant_edits` so the input shows whatever they're in the middle
+/// of typing — even values that don't parse yet (e.g. `"0."` on the way to
+/// `"0.5"`). When a field parses, it's also written through to the policy;
+/// empty = clear the field (set `Option` to None).
+#[derive(Clone, Default, Debug)]
+pub struct VariantEdit {
+    pub ctx: String,
+    pub temperature: String,
+    pub top_p: String,
+    pub frequency_penalty: String,
+    pub presence_penalty: String,
+}
+
+impl VariantEdit {
+    /// Initial editor text reflecting whatever's currently committed in the
+    /// variant. Empty string = the policy holds `None`. Used to seed the map
+    /// the first time a row is rendered.
+    pub fn from_variant(v: &policy::Variant) -> Self {
+        fn f<T: std::fmt::Display>(o: Option<T>) -> String {
+            o.map(|x| x.to_string()).unwrap_or_default()
+        }
+        Self {
+            ctx: f(v.ctx),
+            temperature: f(v.temperature),
+            top_p: f(v.top_p),
+            frequency_penalty: f(v.frequency_penalty),
+            presence_penalty: f(v.presence_penalty),
+        }
+    }
+
+    pub fn set(&mut self, field: VariantField, s: String) {
+        match field {
+            VariantField::Ctx => self.ctx = s,
+            VariantField::Temperature => self.temperature = s,
+            VariantField::TopP => self.top_p = s,
+            VariantField::FrequencyPenalty => self.frequency_penalty = s,
+            VariantField::PresencePenalty => self.presence_penalty = s,
+        }
+    }
+
+    pub fn get(&self, field: VariantField) -> &str {
+        match field {
+            VariantField::Ctx => &self.ctx,
+            VariantField::Temperature => &self.temperature,
+            VariantField::TopP => &self.top_p,
+            VariantField::FrequencyPenalty => &self.frequency_penalty,
+            VariantField::PresencePenalty => &self.presence_penalty,
+        }
+    }
+}
+
+/// Apply user text to a `Variant`. Returns `true` iff the policy was changed
+/// (so the caller can decide whether to persist). Empty text means "clear"
+/// (set the field to `None`); non-empty parseable text sets the field;
+/// non-empty unparseable text is a no-op (the edit state keeps the user's text
+/// visible while they fix the typo).
+fn apply_variant_field(v: &mut policy::Variant, field: VariantField, s: &str) -> bool {
+    let s = s.trim();
+    fn pf32(s: &str) -> Option<Option<f32>> {
+        if s.is_empty() { return Some(None); }
+        s.parse::<f32>().ok().map(Some)
+    }
+    fn pu32(s: &str) -> Option<Option<u32>> {
+        if s.is_empty() { return Some(None); }
+        s.parse::<u32>().ok().map(Some)
+    }
+    match field {
+        VariantField::Ctx => match pu32(s) { Some(n) => { v.ctx = n; true } None => false },
+        VariantField::Temperature => match pf32(s) { Some(n) => { v.temperature = n; true } None => false },
+        VariantField::TopP => match pf32(s) { Some(n) => { v.top_p = n; true } None => false },
+        VariantField::FrequencyPenalty => match pf32(s) { Some(n) => { v.frequency_penalty = n; true } None => false },
+        VariantField::PresencePenalty => match pf32(s) { Some(n) => { v.presence_penalty = n; true } None => false },
+    }
+}
 
 pub fn run() -> cosmic::iced::Result {
     let settings = cosmic::app::Settings::default().size(cosmic::iced::Size::new(640.0, 780.0));
@@ -111,9 +199,10 @@ pub struct Workspace {
     am_vendor: Option<usize>,       // new-model vendor (index into catalog keys)
     am_model: Option<usize>,        // new-model model (index into that vendor's list)
     cat_draft: String,              // selected model's categories (comma-edited)
-    av_name: String,                // new-variant name
-    av_ctx: String,                 // new-variant ctx (numeric text)
-    av_thinking: Option<usize>,     // new-variant thinking (index into THINKING_OPTS)
+    av_name: String,                // new-variant name (add row is name-only)
+    /// In-progress text for each variant's inline knobs, keyed by (model, vname).
+    /// Renders take from here; commits write through to `policy.models.*.variants`.
+    variant_edits: BTreeMap<(String, String), VariantEdit>,
 
     origin: Origin,
     source: text_editor::Content,
@@ -179,10 +268,12 @@ pub enum Message {
     CommitCats(String),
     SetModelDefaultVariant(String, String),
     AvName(String),
-    AvCtx(String),
-    AvThinking(usize),
     AddVariant(String),
     DeleteVariant(String, String),
+    /// Edit an inline numeric knob on an existing variant: model, vname, field, new text.
+    SetVariantField(String, String, VariantField, String),
+    /// Edit the `thinking` dropdown on an existing variant: model, vname, dropdown index.
+    SetVariantThinking(String, String, usize),
     SetGlobalUse(String),
     Retry,
     Clear,
@@ -214,7 +305,7 @@ impl cosmic::Application for Workspace {
         // If an image is on the clipboard, open straight into Image mode with it
         // loaded (ready for a vision Run); else load clipboard text as the source.
         let clip_image = daemon::clipboard_image();
-        let me = Self {
+        let mut me = Self {
             core,
             status: None,
             policy: policy::load(),
@@ -232,8 +323,7 @@ impl cosmic::Application for Workspace {
             am_model: None,
             cat_draft: String::new(),
             av_name: String::new(),
-            av_ctx: String::new(),
-            av_thinking: None,
+            variant_edits: BTreeMap::new(),
             origin: if clip_image.is_some() { Origin::Image } else { Origin::Clipboard },
             source: text_editor::Content::new(),
             url_input: String::new(),
@@ -253,6 +343,7 @@ impl cosmic::Application for Workspace {
             status_msg: None,
             open_menu: None,
         };
+        me.seed_variant_edits();   // first paint shows what's currently in policy
         let mut tasks = vec![status_task(), patterns_task(), catalog_task()];
         if clip_image.is_none() {
             tasks.push(load_clipboard_task()); // text clipboard → source editor
@@ -574,29 +665,24 @@ impl cosmic::Application for Workspace {
                 }
             }
             Message::AvName(s) => self.av_name = s,
-            Message::AvCtx(s) => self.av_ctx = s,
-            Message::AvThinking(i) => self.av_thinking = Some(i),
             Message::AddVariant(model) => {
+                // Add-row is now name-only — the knobs are edited inline on the
+                // new row once it exists. New variants start "empty" (all None);
+                // the user fills knobs in via the SetVariantField path.
                 let vname = self.av_name.trim().to_string();
                 if !vname.is_empty() {
                     if let Some(m) = self.policy.models.get_mut(&model) {
-                        let ctx = self.av_ctx.trim().parse::<u32>().ok();
-                        let thinking = match self.av_thinking {
-                            Some(1) => Some("off".into()),
-                            Some(2) => Some("on".into()),
-                            _ => None,
-                        };
-                        m.variants.insert(
-                            vname.clone(),
-                            policy::Variant { ctx, thinking, ..Default::default() },
-                        );
+                        m.variants.insert(vname.clone(), policy::Variant::default());
                         if m.default.is_none() {
-                            m.default = Some(vname);
+                            m.default = Some(vname.clone());
                         }
+                        // Ensure the new row has an edit entry from the start
+                        // (so text_input can borrow its strings on first paint).
+                        self.variant_edits
+                            .entry((model.clone(), vname))
+                            .or_default();
                         self.persist();
                         self.av_name.clear();
-                        self.av_ctx.clear();
-                        self.av_thinking = None;
                     }
                 }
             }
@@ -607,6 +693,42 @@ impl cosmic::Application for Workspace {
                         m.default = m.variants.keys().next().cloned();
                     }
                     self.persist();
+                }
+                // and drop any lingering edit state for the removed row
+                self.variant_edits.remove(&(model, vname));
+            }
+            Message::SetVariantField(model, vname, field, s) => {
+                // Always update the edit state so the input box echoes what the
+                // user typed (even un-parseable values like "0." mid-keystroke).
+                self.variant_edits
+                    .entry((model.clone(), vname.clone()))
+                    .or_default()
+                    .set(field, s.clone());
+                // Try to commit to the policy: empty → clear; parseable → set;
+                // un-parseable → leave the prior policy value (the edit-state
+                // text stays visible so the user can fix the typo).
+                let mut changed = false;
+                if let Some(m) = self.policy.models.get_mut(&model) {
+                    if let Some(v) = m.variants.get_mut(&vname) {
+                        changed = apply_variant_field(v, field, &s);
+                    }
+                }
+                if changed {
+                    self.persist();
+                }
+            }
+            Message::SetVariantThinking(model, vname, idx) => {
+                // THINKING_OPTS: 0=(default)/None, 1=off, 2=on.
+                let new = match idx {
+                    1 => Some("off".to_string()),
+                    2 => Some("on".to_string()),
+                    _ => None,
+                };
+                if let Some(m) = self.policy.models.get_mut(&model) {
+                    if let Some(v) = m.variants.get_mut(&vname) {
+                        v.thinking = new;
+                        self.persist();
+                    }
                 }
             }
             Message::SetGlobalUse(u) => {
@@ -775,6 +897,21 @@ impl Workspace {
         }
     }
 
+    /// Pre-populate `variant_edits` from the loaded policy so the inline editors
+    /// show the *current* values on first paint. Without this, an existing
+    /// variant with `ctx = 2048` would render an empty input until the user
+    /// typed. Called once at init; AddVariant tops up the new row on its own.
+    fn seed_variant_edits(&mut self) {
+        for (mname, m) in &self.policy.models {
+            for (vname, v) in &m.variants {
+                let key = (mname.clone(), vname.clone());
+                self.variant_edits
+                    .entry(key)
+                    .or_insert_with(|| VariantEdit::from_variant(v));
+            }
+        }
+    }
+
     /// The Library: curate which patterns are in your active set (★) and click a
     /// pattern to configure its model/vendor. Search reveals the full set; with no
     /// query it shows your active set.
@@ -939,28 +1076,81 @@ impl Workspace {
             }
             for (vname, v) in &m.variants {
                 let star = if m.default.as_deref() == Some(vname.as_str()) { "\u{2605} " } else { "  " };
-                let mut parts: Vec<String> = Vec::new();
-                if let Some(c) = v.ctx { parts.push(format!("ctx {c}")); }
-                if let Some(t) = &v.thinking { parts.push(format!("think {t}")); }
-                if let Some(t) = v.temperature { parts.push(format!("temp {t}")); }
-                let key = format!("{name}/{vname}");
-                let used = usage.get(&key).map(|u| format!("  \u{2190} {}", u.join(", "))).unwrap_or_default();
-                let line = text::caption(format!(
-                    "{star}{vname}: {}{}",
-                    if parts.is_empty() { "base params".into() } else { parts.join(", ") },
-                    used,
-                ));
+                let usage_key = format!("{name}/{vname}");
+                let used = usage.get(&usage_key)
+                    .map(|u| format!("  \u{2190} {}", u.join(", ")))
+                    .unwrap_or_default();
+
                 if editing {
-                    let (mn, vn) = (name.clone(), vname.clone());
-                    card = card.push(
-                        cosmic::iced::widget::row![
-                            line,
-                            cosmic::widget::Space::new().width(Length::Fill),
-                            button::text("\u{2715}").on_press(Message::DeleteVariant(mn, vn)),
-                        ]
-                        .align_y(Alignment::Center),
-                    );
+                    // Row 1 — identity: star · name · thinking dropdown · delete.
+                    let thinking_idx = match v.thinking.as_deref() {
+                        Some("off") => Some(1usize),
+                        Some("on") => Some(2usize),
+                        _ => None,
+                    };
+                    let (mn_th, vn_th) = (name.clone(), vname.clone());
+                    let (mn_del, vn_del) = (name.clone(), vname.clone());
+                    let row1 = cosmic::iced::widget::row![
+                        text::caption(format!("{star}{vname}{used}")),
+                        cosmic::widget::Space::new().width(Length::Fill),
+                        dropdown(
+                            THINKING_OPTS.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+                            thinking_idx,
+                            move |i| Message::SetVariantThinking(mn_th.clone(), vn_th.clone(), i),
+                        ),
+                        button::text("\u{2715}").on_press(Message::DeleteVariant(mn_del, vn_del)),
+                    ]
+                    .spacing(s.space_xxs)
+                    .align_y(Alignment::Center);
+                    card = card.push(row1);
+
+                    // Row 2 — knobs. text_input values are borrowed from the
+                    // edit map (lifetime tied to &self); missing entry → "".
+                    let edit_ref = self.variant_edits.get(&(name.clone(), vname.clone()));
+                    let ctx_v = edit_ref.map(|e| e.ctx.as_str()).unwrap_or("");
+                    let temp_v = edit_ref.map(|e| e.temperature.as_str()).unwrap_or("");
+                    let top_v = edit_ref.map(|e| e.top_p.as_str()).unwrap_or("");
+                    let freq_v = edit_ref.map(|e| e.frequency_penalty.as_str()).unwrap_or("");
+                    let pres_v = edit_ref.map(|e| e.presence_penalty.as_str()).unwrap_or("");
+                    let (mn_c, vn_c) = (name.clone(), vname.clone());
+                    let (mn_t, vn_t) = (name.clone(), vname.clone());
+                    let (mn_p, vn_p) = (name.clone(), vname.clone());
+                    let (mn_f, vn_f) = (name.clone(), vname.clone());
+                    let (mn_r, vn_r) = (name.clone(), vname.clone());
+                    let row2 = cosmic::iced::widget::row![
+                        text_input("ctx", ctx_v)
+                            .on_input(move |s| Message::SetVariantField(mn_c.clone(), vn_c.clone(), VariantField::Ctx, s))
+                            .width(Length::Fixed(60.0)),
+                        text_input("temp", temp_v)
+                            .on_input(move |s| Message::SetVariantField(mn_t.clone(), vn_t.clone(), VariantField::Temperature, s))
+                            .width(Length::Fixed(60.0)),
+                        text_input("topP", top_v)
+                            .on_input(move |s| Message::SetVariantField(mn_p.clone(), vn_p.clone(), VariantField::TopP, s))
+                            .width(Length::Fixed(60.0)),
+                        text_input("freqPen", freq_v)
+                            .on_input(move |s| Message::SetVariantField(mn_f.clone(), vn_f.clone(), VariantField::FrequencyPenalty, s))
+                            .width(Length::Fixed(70.0)),
+                        text_input("presPen", pres_v)
+                            .on_input(move |s| Message::SetVariantField(mn_r.clone(), vn_r.clone(), VariantField::PresencePenalty, s))
+                            .width(Length::Fixed(70.0)),
+                    ]
+                    .spacing(s.space_xxs)
+                    .align_y(Alignment::Center);
+                    card = card.push(row2);
                 } else {
+                    // Read-only compact summary — covers all knobs that are set.
+                    let mut parts: Vec<String> = Vec::new();
+                    if let Some(c) = v.ctx { parts.push(format!("ctx {c}")); }
+                    if let Some(t) = &v.thinking { parts.push(format!("think {t}")); }
+                    if let Some(t) = v.temperature { parts.push(format!("temp {t}")); }
+                    if let Some(t) = v.top_p { parts.push(format!("topP {t}")); }
+                    if let Some(t) = v.frequency_penalty { parts.push(format!("freqPen {t}")); }
+                    if let Some(t) = v.presence_penalty { parts.push(format!("presPen {t}")); }
+                    let line = text::caption(format!(
+                        "{star}{vname}: {}{}",
+                        if parts.is_empty() { "base params".into() } else { parts.join(", ") },
+                        used,
+                    ));
                     card = card.push(line);
                 }
             }
@@ -997,14 +1187,16 @@ impl Workspace {
                         .align_y(Alignment::Center),
                     );
                 }
-                // add-variant row
+                // Add-variant row: name only — knobs are edited inline on the
+                // resulting row (decision 2's settled UX).
                 let nm_v = name.clone();
                 card = card.push(
                     cosmic::iced::widget::row![
-                        text_input("variant", &self.av_name).on_input(Message::AvName).width(Length::Fixed(90.0)),
-                        text_input("ctx", &self.av_ctx).on_input(Message::AvCtx).width(Length::Fixed(70.0)),
-                        dropdown(THINKING_OPTS.iter().map(|s| s.to_string()).collect::<Vec<_>>(), self.av_thinking, Message::AvThinking),
-                        button::standard("Add variant").on_press(Message::AddVariant(nm_v)),
+                        text_input("new variant name", &self.av_name)
+                            .on_input(Message::AvName)
+                            .on_submit(move |_| Message::AddVariant(nm_v.clone()))
+                            .width(Length::Fixed(160.0)),
+                        button::standard("+ new variant").on_press(Message::AddVariant(name.clone())),
                     ]
                     .spacing(s.space_xs)
                     .align_y(Alignment::Center),
@@ -1020,7 +1212,7 @@ impl Workspace {
             .spacing(s.space_xs)
             .push(default_row)
             .push(add_row)
-            .push(text::caption("\u{2605} = default variant.  Edit a model to add variants / categories."))
+            .push(text::caption("\u{2605} = default variant.  Edit a model to add variants / categories.  Variant knobs edit inline; blank = use the model default."))
             .push(scrollable(list).height(Length::Fixed(380.0)))
             .into()
     }
