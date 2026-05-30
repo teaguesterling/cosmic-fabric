@@ -1,10 +1,18 @@
 # Tool-calling plan — three axes + a config-callbacks architecture
 
-Status: **proposal drafted 2026-05-29.** Follow-on to
+Status: **all three axes confirmed 2026-05-29.** Follow-on to
 [`tool-calling-backends.md`](tool-calling-backends.md) — that doc mapped the
-option space; this doc commits the architectural shape on the user-supplied
-framing. **Not a settled `decision-N` doc yet** — it ends with an explicit
-confirmation question on the three axes.
+option space; this doc records the architectural decision. Ready for
+implementation as Phase 1 (Ollama, three built-in tools, 1-shot loop). The
+"Confirm" section at the end is now the **settled outcome**:
+
+- **Axis 1**: layered definitions (code built-ins + policy.toml config +
+  future MCP) + pattern frontmatter declares per-pattern tool allow-lists.
+- **Axis 2**: three execution modes per tool (`daemon`, `panel-confirm`,
+  future `mcp`) + four centralized hygiene rules in the executor.
+- **Axis 3**: daemon owns the loop end-to-end on the tool path; fabric
+  unadulterated for plain runs (only `assemble_prompt` reused as a helper);
+  new `RunEvent` variants stream tool events to the panel.
 
 ## What's already settled (re-stating so this doc stands alone)
 
