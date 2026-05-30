@@ -106,6 +106,11 @@ Tools come from a small **built-in registry** in `core.py`
 - *No new infra*: no MCP server processes to spawn, supervise, discover.
 - *Streams cleanly*: each vendor's streaming API is well-understood; tool
   call deltas slot in.
+- *Confirmed working on this box for the loop, not just the single call*:
+  see the "Live test results" appendix — qwen3:14b-iq4xs handles parallel
+  tool calls, multi-step compute, registry discrimination across 10 tools,
+  tool errors (graceful surfacing), and stalling tools (gives up rather than
+  looping). One sharp edge: empty tool results cause hallucination.
 
 **Cons**
 - *Parallel code path per vendor*: schema differences (`tool_use` vs
@@ -425,3 +430,37 @@ Each slice ships a real user-facing capability and is independently testable.
   ambition is bounded: tool calls inside a pattern's run, with sane
   limits and explicit security. Anything more belongs in a separate
   project (e.g., goo, the aspirational layer).
+
+## Appendix — live test results (2026-05-29)
+
+Ran qwen3:14b-iq4xs against the Ollama `/api/chat` tool path with eight
+synthetic test cases (scripts archived in `/tmp/test_qwen_tools{,_2,_3}.py`,
+worth lifting into `src/test_tools.py` when Phase 1 ships). Two minutes of
+wall-clock, eight passes / one fail.
+
+| case | what was probed | outcome |
+|---|---|---|
+| 1 | single tool call, daemon returns secret value the model can't have | ✓ model used the exact value |
+| A | multi-step compute (year₁ + year₂ → age) | ✓ **emitted both calls in parallel in turn 1**, computed on turn 2 |
+| B | explicit parallel (temp + humidity for one city) | ✓ both calls in one turn, both args correct |
+| C | three tools, one applies | ✓ picked correctly, ignored distractors, terminated |
+| D | tool raises Python exception, daemon returns `ERROR: …` | ✓ model surfaced the error to user, did not retry blindly |
+| E | tool requires three args; model emits them | ✓ correct on first try (daemon's schema-rejection retry path not exercised) |
+| F | stalling tool returns `"still in progress"` | ✓ model gave up after one call, told the user |
+| G | 10 tools, only one applies (`get_user_email`) | ✓ picked correctly out of 10 |
+| H | tool returns `""` (empty string) | ✗ **model hallucinated `example@example.com`** |
+
+**Headline corrections to the doc body:**
+
+1. *Loop quality on qwen3:14b is not the floor it was framed as.* The earlier
+   caveat "qwen3:14b is on the smaller side for tool-using" was overcautious.
+   Every loop terminated correctly; the N=8 hard cap never fired in testing.
+2. *Parallel tool calls are the default path, not an edge case.* Cases A and B
+   both showed qwen3 emitting two tool calls in one response, naturally.
+   Phase 1's executor needs to support this from day one.
+
+**The H finding has architectural consequence.** An empty tool result confuses
+the model into "blank canvas" mode. The daemon's executor must never feed an
+empty/None/whitespace-only result back to the model — substitute an explicit
+sentinel like `"TOOL RETURNED NO DATA"`. This is a tool-result-hygiene rule
+the design plan (see `tool-calling-plan.md`) bakes into Axis 2.
