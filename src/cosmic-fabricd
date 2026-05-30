@@ -141,6 +141,36 @@ def handle(req):
             return {"error": "missing pattern"}  # a text run needs a pattern; image runs don't
         pol = core.load_policy()  # re-read live so policy edits take effect
         inp = req.get("input", "")
+
+        # Tool-using pattern? Sidecar meta.toml opt-in (Axis 1 + 3 of the plan).
+        # Bypass fabric entirely for the tool path; daemon owns the loop.
+        meta = core.pattern_meta(pat) if pat else {}
+        if not image and meta.get("tool_use"):
+            inst = core.resolve(pat, pol)
+            model = req.get("model") or inst["model"]
+            vendor = req.get("vendor") or inst["vendor"]
+            tools = core._filter_tools(core.builtin_tools(), meta.get("tools"))
+            max_turns = int(meta.get("tool_max_turns") or core.DEFAULT_TOOL_MAX_TURNS)
+            log(f"run-tools pattern={pat} model={model} vendor={vendor} "
+                f"tools={list(tools)} max_turns={max_turns}")
+            trace = []
+            try:
+                out = core.run_with_tools(
+                    pat, inp, model, vendor,
+                    policy=pol, tools=tools,
+                    on_chunk=None, on_event=trace.append,
+                    max_turns=max_turns, variables=req.get("variables"),
+                    ollama_url=pol["ollama"]["url"], log=log)
+            except Exception as e:
+                log(f"run-tools error: {e}")
+                return {"error": str(e)}
+            pct = core.gpu_placement(model, pol["ollama"]["url"]) \
+                if (vendor or "").lower() == "ollama" else None
+            log(f"run-tools done: {len(out)}ch trace={len(trace)} placement={pct}")
+            return {"output": out, "model": model, "vendor": vendor,
+                    "placement": pct, "trace": trace,
+                    "warn_below": pol["ollama"].get("warn_below_gpu", 99)}
+
         # An image run needs a vision model — the capability rule swaps one in.
         inst = core.resolve(pat, pol, need_capability="vision" if image else None)
         model = req.get("model") or inst["model"]
@@ -214,6 +244,44 @@ def stream_run(req, send):
             send({"chunk": c})
 
     inp = req.get("input", "")
+
+    # Tool-using pattern? Same branch as the sync `run` op — daemon owns the
+    # loop, bypasses fabric. Each tool event becomes its own SSE-style line.
+    meta = core.pattern_meta(pat) if pat else {}
+    if meta.get("tool_use") and not session:
+        # (Session + tools is a future combination — skip for Phase 1.)
+        tools = core._filter_tools(core.builtin_tools(), meta.get("tools"))
+        max_turns = int(meta.get("tool_max_turns") or core.DEFAULT_TOOL_MAX_TURNS)
+        def on_event(ev):
+            if bcast:
+                broadcast({"event": "tool", **ev})
+            else:
+                send({"tool": ev})
+        log(f"run-stream-tools pattern={pat} model={model} vendor={vendor} "
+            f"tools={list(tools)} max_turns={max_turns}")
+        try:
+            out = core.run_with_tools(
+                pat, inp, model, vendor,
+                policy=pol, tools=tools,
+                on_chunk=on_chunk, on_event=on_event,
+                max_turns=max_turns, variables=req.get("variables"),
+                ollama_url=pol["ollama"]["url"], log=log)
+        except Exception as e:
+            log(f"run-stream-tools error: {e}")
+            (broadcast if bcast else send)(
+                {"event": "error", "error": str(e)} if bcast else {"error": str(e)})
+            return
+        pct = core.gpu_placement(model, pol["ollama"]["url"]) \
+            if (vendor or "").lower() == "ollama" else None
+        log(f"run-stream-tools done: placement={pct}")
+        done = {"model": model, "vendor": vendor, "placement": pct, "warn_below": warn_below}
+        if bcast:
+            broadcast({"event": "done", **done})
+            notify_user(out, pat)
+        else:
+            send({"done": True, **done})
+        return
+
     mctx = inst.get("ctx") or (core.pick_ctx(inp) if (vendor or "").lower() == "ollama" else None)
     try:
         out = FAB.run(pat, inp, model, vendor, req.get("variables"), opts,

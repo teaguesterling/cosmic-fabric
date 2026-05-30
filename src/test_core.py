@@ -4,6 +4,7 @@
 Covers the pieces the daemon resolves on every run: model instantiations +
 the capability rule, the active-set globs, context sizing, and option mapping.
 """
+import json
 import os
 import sys
 import unittest
@@ -192,6 +193,252 @@ class InstToOptions(unittest.TestCase):
         self.assertAlmostEqual(opt["topP"], 0.85)
         self.assertAlmostEqual(opt["presencePenalty"], 0.1)
         self.assertAlmostEqual(opt["frequencyPenalty"], 0.3)
+
+
+class ToolHygiene(unittest.TestCase):
+    """The four hygiene rules from doc/design/tool-calling-plan.md, Axis 2."""
+
+    def test_sanitize_normal_passthrough(self):
+        self.assertEqual(core.sanitize_tool_result("x", "hello"), "hello")
+
+    def test_sanitize_empty_string_sentinel(self):
+        # The H fix — empty result must NOT be a blank canvas for hallucination
+        self.assertEqual(core.sanitize_tool_result("x", ""), "TOOL x RETURNED EMPTY STRING")
+
+    def test_sanitize_whitespace_only_sentinel(self):
+        self.assertEqual(core.sanitize_tool_result("x", "  \n\t "),
+                         "TOOL x RETURNED EMPTY STRING")
+
+    def test_sanitize_none_sentinel(self):
+        self.assertEqual(core.sanitize_tool_result("x", None), "TOOL x RETURNED NO DATA")
+
+    def test_sanitize_truncates_large(self):
+        out = core.sanitize_tool_result("x", "a" * (core.TOOL_RESULT_MAX_CHARS + 100))
+        self.assertTrue(out.startswith("a"))
+        self.assertIn(f"showed {core.TOOL_RESULT_MAX_CHARS}", out)
+        self.assertIn(f"of {core.TOOL_RESULT_MAX_CHARS + 100} chars", out)
+
+
+class ValidateArgs(unittest.TestCase):
+    PARAMS = {"type": "object",
+              "properties": {"url": {"type": "string"}, "n": {"type": "integer"}},
+              "required": ["url"]}
+
+    def test_valid(self):
+        self.assertIsNone(core._validate_args(self.PARAMS, {"url": "x", "n": 1}))
+
+    def test_missing_required(self):
+        self.assertIn("missing required", core._validate_args(self.PARAMS, {}))
+
+    def test_wrong_type(self):
+        err = core._validate_args(self.PARAMS, {"url": 42})
+        self.assertIn("must be string", err)
+
+    def test_extras_pass(self):
+        # Extras beyond declared properties are intentionally allowed.
+        self.assertIsNone(core._validate_args(self.PARAMS, {"url": "x", "extra": True}))
+
+    def test_args_not_dict(self):
+        self.assertIn("must be an object", core._validate_args(self.PARAMS, "nope"))
+
+
+class ExecuteTool(unittest.TestCase):
+    def test_clean_call(self):
+        spec = core.ToolSpec(name="echo", description="",
+                             parameters={"type": "object",
+                                         "properties": {"s": {"type": "string"}},
+                                         "required": ["s"]},
+                             run=lambda args, pol: f"echoed: {args['s']}")
+        self.assertEqual(core.execute_tool(spec, {"s": "hi"}, {}), "echoed: hi")
+
+    def test_schema_error_does_not_invoke_callback(self):
+        called = []
+        spec = core.ToolSpec(name="echo", description="",
+                             parameters={"type": "object",
+                                         "properties": {"s": {"type": "string"}},
+                                         "required": ["s"]},
+                             run=lambda args, pol: called.append(1) or "ok")
+        out = core.execute_tool(spec, {}, {})
+        self.assertIn("SCHEMA ERROR", out)
+        self.assertEqual(called, [], "callback ran despite schema error")
+
+    def test_exception_wrapped(self):
+        def boom(args, pol):
+            raise ConnectionError("auth server unreachable")
+        spec = core.ToolSpec(name="lookup", description="",
+                             parameters={"type": "object"},
+                             run=boom)
+        out = core.execute_tool(spec, {}, {})
+        self.assertIn("ERROR in lookup: ConnectionError", out)
+        self.assertIn("auth server unreachable", out)
+
+    def test_empty_result_hits_hygiene(self):
+        # The end-to-end H fix: callback returns "" → executor returns sentinel.
+        spec = core.ToolSpec(name="lookup", description="",
+                             parameters={"type": "object"},
+                             run=lambda args, pol: "")
+        self.assertEqual(core.execute_tool(spec, {}, {}),
+                         "TOOL lookup RETURNED EMPTY STRING")
+
+
+class HttpGetAllowList(unittest.TestCase):
+    def test_denied_by_default(self):
+        # No [tools.http_get] in policy = no allow-list = deny everything.
+        with self.assertRaises(PermissionError):
+            core._http_get_safe({"url": "https://example.com"}, {})
+
+    def test_disallowed_host(self):
+        pol = {"tools": {"http_get": {"allow_domains": ["allowed.example"]}}}
+        with self.assertRaises(PermissionError):
+            core._http_get_safe({"url": "https://evil.example"}, pol)
+
+    def test_url_scheme_required(self):
+        pol = {"tools": {"http_get": {"allow_domains": ["x"]}}}
+        with self.assertRaises(ValueError):
+            core._http_get_safe({"url": "ftp://x/y"}, pol)
+
+
+class ReadFileJail(unittest.TestCase):
+    def test_rejects_absolute_path(self):
+        with self.assertRaises(PermissionError):
+            core._read_file_safe({"path": "/etc/passwd"}, {})
+
+    def test_rejects_dotdot(self):
+        with self.assertRaises(PermissionError):
+            core._read_file_safe({"path": "../something"}, {})
+
+    def test_reads_file_under_root(self):
+        import tempfile, os as _os
+        with tempfile.TemporaryDirectory() as td:
+            p = _os.path.join(td, "hello.txt")
+            with open(p, "w") as f:
+                f.write("hi from the test")
+            pol = {"tools": {"read_file": {"roots": [td]}}}
+            self.assertEqual(
+                core._read_file_safe({"path": "hello.txt"}, pol),
+                "hi from the test")
+
+    def test_missing_file_raises(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            pol = {"tools": {"read_file": {"roots": [td]}}}
+            with self.assertRaises(FileNotFoundError):
+                core._read_file_safe({"path": "nope.txt"}, pol)
+
+
+class ToolLoop(unittest.TestCase):
+    """The multi-turn loop, mocked Ollama: turn 1 emits a tool_call, turn 2
+    produces final text. Verifies termination + event dispatch + accumulation."""
+
+    def _mock_urlopen(self, responses):
+        """Return a context-manager-shaped fake urlopen that yields the next
+        JSON response from `responses` on each call."""
+        import io
+        from contextlib import contextmanager
+        @contextmanager
+        def mock(_req, timeout=None):
+            payload = json.dumps(responses.pop(0)).encode()
+            yield io.BytesIO(payload)
+        return mock
+
+    def _pattern_dir_with_system(self, td, name, system_text):
+        import os as _os
+        d = _os.path.join(td, name)
+        _os.makedirs(d, exist_ok=True)
+        with open(_os.path.join(d, "system.md"), "w") as f:
+            f.write(system_text)
+        return td
+
+    def test_two_turn_loop_terminates(self):
+        import tempfile, json as _json
+        from unittest.mock import patch
+        responses = [
+            # Turn 1 — model wants the tool
+            {"message": {"content": "",
+                          "tool_calls": [{"id": "c1",
+                                          "function": {"name": "echo",
+                                                       "arguments": {"s": "hello"}}}]}},
+            # Turn 2 — final text after seeing the tool result
+            {"message": {"content": "The tool said: echoed: hello", "tool_calls": []}},
+        ]
+        with tempfile.TemporaryDirectory() as td:
+            self._pattern_dir_with_system(td, "p", "You are a test pattern.")
+            spec = core.ToolSpec(name="echo", description="",
+                                 parameters={"type": "object",
+                                             "properties": {"s": {"type": "string"}},
+                                             "required": ["s"]},
+                                 run=lambda args, pol: f"echoed: {args['s']}")
+            events = []
+            chunks = []
+            with patch("urllib.request.urlopen", self._mock_urlopen(responses)):
+                out = core.run_with_tools(
+                    "p", "say hi via the tool",
+                    model="qwen3:14b-iq4xs", vendor="Ollama",
+                    policy={}, tools={"echo": spec},
+                    on_chunk=chunks.append, on_event=events.append,
+                    patterns_dir=td,
+                )
+        self.assertEqual(out, "The tool said: echoed: hello")
+        self.assertEqual(chunks, ["The tool said: echoed: hello"])
+        kinds = [e["type"] for e in events]
+        self.assertEqual(kinds, ["tool_call", "tool_result"])
+        self.assertEqual(events[0]["name"], "echo")
+        self.assertEqual(responses, [], "all mocked responses must have been consumed")
+
+    def test_max_turns_cap_engages(self):
+        import tempfile, json as _json
+        from unittest.mock import patch
+        # Model never stops calling the tool — cap should fire.
+        call_resp = {"message": {"content": "",
+                                 "tool_calls": [{"id": "c", "function": {"name": "echo",
+                                                                          "arguments": {"s": "x"}}}]}}
+        responses = [dict(call_resp) for _ in range(20)]
+        with tempfile.TemporaryDirectory() as td:
+            self._pattern_dir_with_system(td, "p", "test")
+            spec = core.ToolSpec(name="echo", description="",
+                                 parameters={"type": "object",
+                                             "properties": {"s": {"type": "string"}},
+                                             "required": ["s"]},
+                                 run=lambda args, pol: "ok")
+            with patch("urllib.request.urlopen", self._mock_urlopen(responses)):
+                out = core.run_with_tools(
+                    "p", "go", model="qwen3:14b-iq4xs", vendor="Ollama",
+                    policy={}, tools={"echo": spec},
+                    max_turns=3, patterns_dir=td)
+        self.assertIn("hit max_turns=3", out)
+
+    def test_non_ollama_vendor_raises(self):
+        with self.assertRaises(NotImplementedError):
+            core.run_with_tools("p", "x", model="claude-opus-4-7",
+                                vendor="Anthropic", policy={}, tools={})
+
+
+class PatternMeta(unittest.TestCase):
+    def test_missing_meta_returns_empty(self):
+        import tempfile, os as _os
+        with tempfile.TemporaryDirectory() as td:
+            _os.makedirs(_os.path.join(td, "p"))
+            self.assertEqual(core.pattern_meta("p", patterns_dir=td), {})
+
+    def test_reads_tool_use(self):
+        import tempfile, os as _os
+        with tempfile.TemporaryDirectory() as td:
+            d = _os.path.join(td, "p")
+            _os.makedirs(d)
+            with open(_os.path.join(d, "meta.toml"), "w") as f:
+                f.write('tool_use = true\ntools = ["http_get"]\n')
+            m = core.pattern_meta("p", patterns_dir=td)
+            self.assertTrue(m["tool_use"])
+            self.assertEqual(m["tools"], ["http_get"])
+
+    def test_broken_meta_returns_empty(self):
+        import tempfile, os as _os
+        with tempfile.TemporaryDirectory() as td:
+            d = _os.path.join(td, "p")
+            _os.makedirs(d)
+            with open(_os.path.join(d, "meta.toml"), "w") as f:
+                f.write('this is not valid TOML = =')
+            self.assertEqual(core.pattern_meta("p", patterns_dir=td), {})
 
 
 class HtmlToText(unittest.TestCase):

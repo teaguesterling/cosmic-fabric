@@ -520,3 +520,405 @@ def gpu_vram():
         return {"used": used, "free": free, "total": total}
     except Exception:
         return None
+
+
+# ---------- tool calling -----------------------------------------------------
+# Local execution path for tool-using runs (decision 5; doc/design/
+# tool-calling-plan.md). The daemon owns the loop end-to-end on this path;
+# fabric is unadulterated for plain runs. The model speaks tool calls natively
+# (Ollama /api/chat tools=[]); we validate, execute via Python callbacks,
+# sanitize, and feed back. Three centralized hygiene rules in execute_tool /
+# _sanitize_tool_result protect against the failures the live tests surfaced
+# (D=exception, E=schema, H=empty result causes hallucination).
+
+from dataclasses import dataclass
+from typing import Callable, Optional
+import urllib.parse
+
+
+@dataclass
+class ToolSpec:
+    """Definition of one tool the daemon knows how to execute.
+
+    `parameters` is a JSON-Schema fragment (the format Ollama + OpenAI use for
+    function-call tools). `run` is the Python callback — it receives the parsed
+    args dict and the current policy dict; it returns a string (or raises).
+    `mode` determines execution: 'daemon' (in-process), 'panel-confirm' (panel
+    must approve first), 'mcp' (future)."""
+    name: str
+    description: str
+    parameters: dict
+    run: Callable[[dict, dict], str]
+    mode: str = "daemon"
+
+    def to_chat_tool(self) -> dict:
+        """The JSON shape passed to the model in `tools=[...]`. Ollama + OpenAI
+        both consume this format directly."""
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": self.parameters,
+            },
+        }
+
+
+# ----- built-in tools (Axis 1, layer 1) -------------------------------------
+
+def _http_get_safe(args: dict, policy: dict) -> str:
+    """http_get callback. GET a URL, return text body. The URL's host must be
+    on the policy `[tools.http_get] allow_domains` list — an empty/missing
+    allow-list means *no domain is allowed* (deny-by-default). 30s timeout."""
+    url = args.get("url", "")
+    if not isinstance(url, str) or not url.lower().startswith(("http://", "https://")):
+        raise ValueError("url must be a string starting with http:// or https://")
+    host = (urllib.parse.urlparse(url).hostname or "").lower()
+    allow = ((policy.get("tools") or {}).get("http_get") or {}).get("allow_domains") or []
+    allow = [h.lower() for h in allow]
+    if not allow:
+        raise PermissionError("http_get: no allow_domains configured in policy.toml "
+                              "([tools.http_get] allow_domains = [...])")
+    if host not in allow:
+        raise PermissionError(f"http_get: host {host!r} is not in the allow-list {allow}")
+    req = urllib.request.Request(url, headers={"User-Agent": "cosmic-fabric-tools/1"})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return r.read().decode("utf-8", "replace")
+
+
+def _read_file_safe(args: dict, policy: dict) -> str:
+    """read_file callback. Read a UTF-8 file by *relative* path under one of
+    the configured roots (default: the daemon's cwd). Explicit defenses:
+    - absolute paths rejected outright;
+    - any `..` component rejected outright (no parent-dir traversal);
+    - after resolution via realpath, the candidate must lie under a root —
+      symlinks pointing outside are caught here, not by string prefix.
+    The cwd default is per the design plan (NOT `$HOME`, which would expose
+    `~/.ssh`, `~/.config/fabric/.env`, browser cookies, etc.)."""
+    path_arg = args.get("path", "")
+    if not isinstance(path_arg, str) or not path_arg:
+        raise ValueError("path is required and must be a string")
+    if os.path.isabs(path_arg):
+        raise PermissionError("read_file: absolute paths not allowed; use a relative path")
+    parts = path_arg.replace("\\", "/").split("/")
+    if any(p == ".." for p in parts):
+        raise PermissionError("read_file: parent-directory references (..) not allowed")
+    roots_cfg = ((policy.get("tools") or {}).get("read_file") or {}).get("roots") or [os.getcwd()]
+    roots = [os.path.realpath(os.path.expanduser(r)) for r in roots_cfg]
+    for root in roots:
+        candidate = os.path.realpath(os.path.join(root, path_arg))
+        # `candidate` must be inside root (allows root itself for edge case)
+        if not (candidate == root or candidate.startswith(root.rstrip(os.sep) + os.sep)):
+            continue
+        if os.path.isfile(candidate):
+            with open(candidate, "r", encoding="utf-8", errors="replace") as f:
+                return f.read()
+    raise FileNotFoundError(f"read_file: {path_arg!r} not found under any configured root "
+                            f"({len(roots)} root{'s' if len(roots) != 1 else ''})")
+
+
+_HTTP_GET_PARAMS = {
+    "type": "object",
+    "properties": {
+        "url": {"type": "string",
+                "description": "The URL to fetch (http:// or https://). Host must be on the allow-list."},
+    },
+    "required": ["url"],
+}
+
+_READ_FILE_PARAMS = {
+    "type": "object",
+    "properties": {
+        "path": {"type": "string",
+                 "description": "Path relative to a configured root (cwd by default). No '..' or absolute paths."},
+    },
+    "required": ["path"],
+}
+
+
+def builtin_tools() -> dict:
+    """The code-defined tool registry (Axis 1 layer 1). Returns
+    {name: ToolSpec}. The callbacks take (args, policy) so the registry can be
+    constructed once and the current policy is supplied at execute time —
+    avoids stale-policy bugs across config reloads."""
+    return {
+        "http_get": ToolSpec(
+            name="http_get",
+            description=("Fetch the contents of a URL as text. The host must be on the "
+                         "allow-list configured in policy.toml. Use for retrieving public "
+                         "web pages, REST endpoints, or any HTTP-accessible resource."),
+            parameters=_HTTP_GET_PARAMS,
+            run=_http_get_safe,
+            mode="daemon",
+        ),
+        "read_file": ToolSpec(
+            name="read_file",
+            description=("Read a UTF-8 text file by relative path. Jailed to the configured "
+                         "roots (cwd by default). Use for inspecting local source files, "
+                         "configs, or documents the user has placed in scope."),
+            parameters=_READ_FILE_PARAMS,
+            run=_read_file_safe,
+            mode="daemon",
+        ),
+    }
+
+
+# ----- executor + hygiene (Axis 2) ------------------------------------------
+
+TOOL_RESULT_MAX_CHARS = 16_000   # ~4K tokens; a typical Ollama context-window-friendly cap
+
+
+def _validate_args(parameters: dict, args: dict) -> Optional[str]:
+    """Minimal JSON-Schema validation: required keys present, primitive types
+    match. Returns None on success, an error message string on failure. Not a
+    full validator — covers the cases that matter for tool callbacks (missing
+    required field; wrong primitive type) without pulling in a jsonschema dep.
+    Letting un-validated extras through is intentional (forward compat)."""
+    if not isinstance(args, dict):
+        return f"args must be an object, got {type(args).__name__}"
+    required = parameters.get("required") or []
+    missing = [k for k in required if k not in args]
+    if missing:
+        return f"missing required args: {missing}"
+    props = parameters.get("properties") or {}
+    type_check = {
+        "string":  lambda v: isinstance(v, str),
+        "integer": lambda v: isinstance(v, int) and not isinstance(v, bool),
+        "number":  lambda v: isinstance(v, (int, float)) and not isinstance(v, bool),
+        "boolean": lambda v: isinstance(v, bool),
+        "array":   lambda v: isinstance(v, list),
+        "object":  lambda v: isinstance(v, dict),
+    }
+    for key, spec in props.items():
+        if key not in args:
+            continue
+        wanted = spec.get("type")
+        if wanted in type_check and not type_check[wanted](args[key]):
+            return f"{key!r} must be {wanted}, got {type(args[key]).__name__}"
+    return None
+
+
+def sanitize_tool_result(name: str, raw) -> str:
+    """Daemon-side hygiene before a tool result is fed back to the model.
+
+    The H failure from the live tests (empty result → hallucinated value)
+    lives here: empty/None/whitespace-only becomes an explicit sentinel rather
+    than confusing the model into 'blank canvas' mode. Large results are
+    truncated with an explicit marker the model can recognize."""
+    if raw is None:
+        return f"TOOL {name} RETURNED NO DATA"
+    if isinstance(raw, str):
+        if not raw.strip():
+            return f"TOOL {name} RETURNED EMPTY STRING"
+        s = raw
+    else:
+        s = str(raw)
+    if len(s) > TOOL_RESULT_MAX_CHARS:
+        head = s[:TOOL_RESULT_MAX_CHARS]
+        return f"{head}\n[truncated: showed {TOOL_RESULT_MAX_CHARS} of {len(s)} chars]"
+    return s
+
+
+def execute_tool(spec: ToolSpec, args: dict, policy: dict) -> str:
+    """Validate args, dispatch to the tool's callback, wrap exceptions,
+    sanitize the result. Returns a string suitable for the `tool` message
+    going back to the model.
+
+    Note: panel-confirm tools must be approved by the panel *before* this is
+    called; the gating happens upstream in the daemon loop.
+    """
+    err = _validate_args(spec.parameters, args)
+    if err is not None:
+        return f"SCHEMA ERROR for {spec.name}: {err}"
+    try:
+        raw = spec.run(args, policy)
+    except Exception as e:
+        return f"ERROR in {spec.name}: {type(e).__name__}: {e}"
+    return sanitize_tool_result(spec.name, raw)
+
+
+# ----- sidecar pattern metadata (Axis 1, the per-pattern declaration) -------
+
+def pattern_meta(name: str, patterns_dir: Optional[str] = None) -> dict:
+    """Read a pattern's sidecar `meta.toml` — cosmic-fabric-only metadata that
+    fabric itself ignores (the pattern dir keeps its `system.md` unchanged).
+    Returns `{}` when absent or unreadable.
+
+    Schema (all optional):
+        tool_use = true|false           # opt this pattern into the tool loop
+        tools = ["http_get", ...]       # the allow-list of tool names; absent
+                                        # means "any registered tool"
+        tool_max_turns = 8              # per-pattern cap; falls back to default
+    """
+    base = patterns_dir or os.path.expanduser("~/.config/fabric/patterns")
+    path = os.path.join(base, name, "meta.toml")
+    if not os.path.isfile(path):
+        return {}
+    try:
+        import tomllib  # Python 3.11+
+        with open(path, "rb") as f:
+            return tomllib.load(f) or {}
+    except Exception:
+        return {}
+
+
+# ----- the multi-turn tool loop (Axis 3) ------------------------------------
+
+DEFAULT_TOOL_MAX_TURNS = 8
+
+
+def _filter_tools(registry: dict, allow_list) -> dict:
+    """Tool-allow-list from pattern meta: an absent / empty `tools=[]` means
+    *any registered tool is allowed*; an explicit list is least-privilege."""
+    if not allow_list:
+        return dict(registry)
+    return {name: spec for name, spec in registry.items() if name in allow_list}
+
+
+def run_with_tools(pattern, user_input, model, vendor, *,
+                   policy, tools=None, on_chunk=None, on_event=None,
+                   max_turns=DEFAULT_TOOL_MAX_TURNS, variables=None,
+                   ollama_url="http://localhost:11434", confirm=None,
+                   patterns_dir=None, log=lambda m: None):
+    """Run a pattern through a bounded multi-turn tool loop, **bypassing fabric**.
+
+    Phase 1 is Ollama-only: the model turn POSTs to `<ollama>/api/chat` with
+    `tools=[...]`; tool calls are executed locally; results are appended as
+    `role=tool` messages; the loop terminates when the model emits zero
+    tool calls or `max_turns` is hit.
+
+    Args:
+        pattern: pattern name (read from disk for system prompt)
+        user_input: user's input text (will be assembled in alongside the
+                    pattern's system prompt)
+        model: the resolved Ollama model name
+        vendor: must be "Ollama" in Phase 1; other vendors raise NotImplementedError
+        policy: the loaded policy dict (passed to each tool callback)
+        tools: dict {name: ToolSpec} — the *resolved* registry for this run
+               (already filtered by the pattern's allow-list)
+        on_chunk: callable(text) for content fragments (called once per turn
+                  that produces final content)
+        on_event: callable(event_dict) for tool events:
+                  {type: "tool_call", name, args, id}
+                  {type: "tool_result", name, id, summary}
+                  {type: "tool_confirm_required", name, args, id, command_preview}
+        max_turns: hard cap on iterations (default 8)
+        variables: {{var}} substitutions for the assembled prompt
+        confirm: callable(name, args, command_preview) -> bool, used for
+                 panel-confirm tools. None = auto-deny those (Phase 1 default
+                 if no panel registered).
+
+    Returns: the final assistant text accumulated across all turns.
+    Raises: NotImplementedError for non-Ollama; urllib errors for network.
+    """
+    if (vendor or "").lower() != "ollama":
+        raise NotImplementedError(
+            f"run_with_tools: phase 1 supports Ollama only (got vendor={vendor!r})")
+    if tools is None:
+        tools = {}
+
+    # Assemble the system prompt locally (same helper FabricClient uses for
+    # `assemble_prompt`, lifted here so we don't hit fabric for the tool path).
+    base = patterns_dir or os.path.expanduser("~/.config/fabric/patterns")
+    sys_path = os.path.join(base, pattern, "system.md")
+    try:
+        with open(sys_path, "r", encoding="utf-8") as f:
+            system_prompt = f.read()
+    except FileNotFoundError:
+        raise FileNotFoundError(f"pattern {pattern!r} not found at {sys_path}")
+    if variables:
+        for k, v in variables.items():
+            system_prompt = system_prompt.replace("{{" + str(k) + "}}", str(v))
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user",   "content": user_input or ""},
+    ]
+    tool_schemas = [spec.to_chat_tool() for spec in tools.values()]
+    final_text_parts: list[str] = []
+
+    chat_url = ollama_url.rstrip("/") + "/api/chat"
+
+    for turn in range(1, max_turns + 1):
+        body = {
+            "model": model,
+            "stream": False,    # phase 1: per-turn complete responses
+            "messages": messages,
+            "tools": tool_schemas,
+            "options": {"temperature": 0},
+        }
+        log(f"tool-loop turn {turn}: posting {len(messages)} messages, "
+            f"{len(tool_schemas)} tools, model={model}")
+        req = urllib.request.Request(
+            chat_url, method="POST",
+            headers={"Content-Type": "application/json"},
+            data=json.dumps(body).encode("utf-8"))
+        with urllib.request.urlopen(req, timeout=300) as r:
+            resp = json.load(r)
+
+        msg = resp.get("message") or {}
+        content = (msg.get("content") or "").strip()
+        calls = msg.get("tool_calls") or []
+
+        if calls:
+            # Echo the assistant turn (with the calls) so the model sees its
+            # own decisions when it gets the tool results back.
+            messages.append({"role": "assistant", "content": content,
+                             "tool_calls": calls})
+            for c in calls:
+                fn = c.get("function") or {}
+                name = fn.get("name") or ""
+                args = fn.get("arguments") or {}
+                call_id = c.get("id") or f"call_{turn}_{name}"
+                spec = tools.get(name)
+
+                if spec is None:
+                    result = f"ERROR: tool {name!r} is not available to this pattern"
+                else:
+                    # Panel-confirm gating happens BEFORE execute_tool.
+                    if spec.mode == "panel-confirm":
+                        # Build a preview for the panel: for run_shell_confirmed
+                        # the preview is the rendered command; for others, fall
+                        # back to a JSON arg dump.
+                        preview = args.get("command") or json.dumps(args)
+                        if on_event:
+                            on_event({"type": "tool_confirm_required",
+                                      "name": name, "args": args, "id": call_id,
+                                      "command_preview": preview})
+                        approved = bool(confirm(name, args, preview)) if confirm else False
+                        if not approved:
+                            result = f"USER DENIED execution of {name}({preview})"
+                        else:
+                            if on_event:
+                                on_event({"type": "tool_call", "name": name,
+                                          "args": args, "id": call_id})
+                            result = execute_tool(spec, args, policy)
+                    else:
+                        if on_event:
+                            on_event({"type": "tool_call", "name": name,
+                                      "args": args, "id": call_id})
+                        result = execute_tool(spec, args, policy)
+
+                if on_event:
+                    summary = result if len(result) <= 120 else result[:120] + "…"
+                    on_event({"type": "tool_result", "name": name, "id": call_id,
+                              "summary": summary})
+                messages.append({"role": "tool", "content": result})
+            # Loop continues — next turn the model sees the tool results.
+            continue
+
+        # No tool calls → final content for this turn.
+        if content:
+            final_text_parts.append(content)
+            if on_chunk:
+                on_chunk(content)
+        log(f"tool-loop terminated at turn {turn} ({sum(len(p) for p in final_text_parts)} chars)")
+        return "\n".join(final_text_parts).strip()
+
+    # Hit the cap. Emit a clear marker, return whatever final text we accumulated.
+    cap_msg = f"\n\n[tool-loop hit max_turns={max_turns} cap; stopped]"
+    if on_chunk:
+        on_chunk(cap_msg)
+    final_text_parts.append(cap_msg)
+    log(f"tool-loop hit max_turns={max_turns}")
+    return "\n".join(final_text_parts).strip()
