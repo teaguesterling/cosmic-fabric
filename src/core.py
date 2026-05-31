@@ -24,6 +24,7 @@ def load_policy():
         "ollama": {"bin": "/opt/ollama/bin/ollama", "url": "http://localhost:11434", "warn_below_gpu": 99},
         "surface": {"include": [], "exclude": []},
         "models": {},
+        "tools": {},   # decision 5: [tools.<name>] sections (allow_domains, roots, …)
     }
     try:
         import tomllib
@@ -35,6 +36,7 @@ def load_policy():
         pol["ollama"] = {**pol["ollama"], **(d.get("ollama", {}) or {})}
         pol["surface"] = {**pol["surface"], **(d.get("surface", {}) or {})}
         pol["models"] = d.get("models", {}) or {}
+        pol["tools"] = d.get("tools", {}) or {}
     except FileNotFoundError:
         pass
     except Exception as e:  # malformed policy must not break the daemon
@@ -567,9 +569,15 @@ class ToolSpec:
 # ----- built-in tools (Axis 1, layer 1) -------------------------------------
 
 def _http_get_safe(args: dict, policy: dict) -> str:
-    """http_get callback. GET a URL, return text body. The URL's host must be
-    on the policy `[tools.http_get] allow_domains` list — an empty/missing
-    allow-list means *no domain is allowed* (deny-by-default). 30s timeout."""
+    """http_get callback. Fetch a URL, return cleaned **markdown** (not raw
+    HTML) via the same Jina path `core.fetch_url(mode="scrape")` uses for the
+    URL-source origin — way better signal density for the model. The URL's
+    host must be on the policy `[tools.http_get] allow_domains` list; an empty
+    or missing allow-list means *no domain is allowed* (deny-by-default).
+
+    The URL is percent-encoded path-side before fetching so non-ASCII chars
+    (e.g. "Reykjavík") don't blow up urllib's ASCII-only header handling.
+    """
     url = args.get("url", "")
     if not isinstance(url, str) or not url.lower().startswith(("http://", "https://")):
         raise ValueError("url must be a string starting with http:// or https://")
@@ -581,9 +589,14 @@ def _http_get_safe(args: dict, policy: dict) -> str:
                               "([tools.http_get] allow_domains = [...])")
     if host not in allow:
         raise PermissionError(f"http_get: host {host!r} is not in the allow-list {allow}")
-    req = urllib.request.Request(url, headers={"User-Agent": "cosmic-fabric-tools/1"})
-    with urllib.request.urlopen(req, timeout=30) as r:
-        return r.read().decode("utf-8", "replace")
+    # Percent-encode non-ASCII path/query characters; leave scheme + host intact.
+    parts = urllib.parse.urlsplit(url)
+    safe_path = urllib.parse.quote(parts.path, safe="/%")
+    safe_query = urllib.parse.quote(parts.query, safe="=&%")
+    encoded = urllib.parse.urlunsplit(
+        (parts.scheme, parts.netloc, safe_path, safe_query, parts.fragment))
+    # Delegate to the shared fetch_url which already does Jina (clean markdown).
+    return fetch_url(encoded, mode="scrape", timeout=30)
 
 
 def _read_file_safe(args: dict, policy: dict) -> str:
@@ -636,6 +649,42 @@ _READ_FILE_PARAMS = {
 }
 
 
+def _run_shell_confirmed(args: dict, policy: dict) -> str:
+    """run_shell_confirmed callback. ONLY called after panel approval (the
+    gating happens upstream in `run_with_tools`'s panel-confirm branch — if it
+    reaches this function, the user said Approve). Executes the command via a
+    list-form subprocess (no shell metacharacter expansion), captures stdout +
+    stderr, returns the combined output. 60s timeout. No environment variable
+    inheritance beyond what subprocess.run defaults to."""
+    cmd = args.get("command")
+    if not isinstance(cmd, list) or not cmd:
+        raise ValueError("command must be a non-empty list of strings "
+                         "(no shell expansion — pass argv as an array)")
+    if any(not isinstance(part, str) for part in cmd):
+        raise ValueError("command must be a list of strings")
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=60,
+                       stdin=subprocess.DEVNULL)
+    out = (r.stdout or "")
+    if r.stderr:
+        out += ("\n[stderr]\n" + r.stderr)
+    return out + f"\n[exit {r.returncode}]"
+
+
+_RUN_SHELL_PARAMS = {
+    "type": "object",
+    "properties": {
+        "command": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": ("argv array — e.g. [\"git\",\"log\",\"-n\",\"5\",\"--oneline\"]. "
+                            "No shell, so no glob/quote/redirect expansion. The user must "
+                            "approve before execution."),
+        },
+    },
+    "required": ["command"],
+}
+
+
 def builtin_tools() -> dict:
     """The code-defined tool registry (Axis 1 layer 1). Returns
     {name: ToolSpec}. The callbacks take (args, policy) so the registry can be
@@ -659,6 +708,16 @@ def builtin_tools() -> dict:
             parameters=_READ_FILE_PARAMS,
             run=_read_file_safe,
             mode="daemon",
+        ),
+        "run_shell_confirmed": ToolSpec(
+            name="run_shell_confirmed",
+            description=("Run a shell command (no shell expansion; argv array) AFTER the "
+                         "user explicitly approves it in the panel. Use sparingly — only "
+                         "when the task genuinely needs to execute something locally. "
+                         "60s timeout."),
+            parameters=_RUN_SHELL_PARAMS,
+            run=_run_shell_confirmed,
+            mode="panel-confirm",
         ),
     }
 
@@ -880,12 +939,19 @@ def run_with_tools(pattern, user_input, model, vendor, *,
                         # Build a preview for the panel: for run_shell_confirmed
                         # the preview is the rendered command; for others, fall
                         # back to a JSON arg dump.
-                        preview = args.get("command") or json.dumps(args)
+                        cmd = args.get("command")
+                        if isinstance(cmd, list):
+                            preview = " ".join(cmd)
+                        else:
+                            preview = json.dumps(args)
                         if on_event:
                             on_event({"type": "tool_confirm_required",
                                       "name": name, "args": args, "id": call_id,
                                       "command_preview": preview})
-                        approved = bool(confirm(name, args, preview)) if confirm else False
+                        # `confirm(call_id, name, args, preview)` — the daemon
+                        # looks the call_id up in its pending registry to match
+                        # the panel's separate-connection ack.
+                        approved = bool(confirm(call_id, name, args, preview)) if confirm else False
                         if not approved:
                             result = f"USER DENIED execution of {name}({preview})"
                         else:

@@ -36,6 +36,40 @@ FAB = None
 SUBS = []
 SUBS_LOCK = threading.Lock()
 
+# Panel-confirm registry: a tool-loop thread blocks on `event` waiting for the
+# panel's tool_confirm response (separate connection). Keyed by request id so a
+# concurrent confirm goes to the right tool call. See doc/design/
+# tool-calling-plan.md Axis 2 ("the UI handshake") for the protocol.
+_PENDING_CONFIRMS = {}            # id -> {"event": threading.Event, "approved": bool}
+_PENDING_LOCK = threading.Lock()
+_CONFIRM_TIMEOUT = 60.0           # seconds the daemon will wait for an answer
+
+
+def _await_confirm(request_id, name=""):
+    """Block until the panel responds with a tool_confirm op for `request_id`,
+    or the timeout fires. The matching `tool_confirm_required` event was
+    already emitted upstream by `core.run_with_tools` via its on_event hook —
+    this function does just the wait + dispatch."""
+    entry = {"event": threading.Event(), "approved": False}
+    with _PENDING_LOCK:
+        _PENDING_CONFIRMS[request_id] = entry
+    answered = entry["event"].wait(timeout=_CONFIRM_TIMEOUT)
+    with _PENDING_LOCK:
+        _PENDING_CONFIRMS.pop(request_id, None)
+    if not answered:
+        log(f"tool_confirm timeout for id={request_id} name={name}")
+        return False
+    return entry["approved"]
+
+
+def _confirm_callback_for_stream():
+    """The callback `core.run_with_tools(confirm=...)` expects:
+    `(call_id, name, args, preview) -> bool`. The streaming `run` path uses
+    this so the panel can approve via a side-channel `tool_confirm` op."""
+    def confirm(call_id, name, _args, _preview):
+        return _await_confirm(call_id, name)
+    return confirm
+
 
 def broadcast(event):
     with SUBS_LOCK:
@@ -87,6 +121,19 @@ def handle(req):
     op = req.get("op")
     if op == "ping":
         return {"ok": True, "serve": FAB.alive()}
+    if op == "tool_confirm":
+        # Side-channel ack from the panel: a tool-loop thread is blocked on
+        # the matching event. Look it up, set approved, signal.
+        rid = req.get("id")
+        approved = bool(req.get("approved"))
+        with _PENDING_LOCK:
+            entry = _PENDING_CONFIRMS.get(rid)
+        if entry is None:
+            return {"ok": False, "error": "unknown or expired confirm id"}
+        entry["approved"] = approved
+        entry["event"].set()
+        log(f"tool_confirm id={rid} approved={approved}")
+        return {"ok": True}
     if op == "fabric_url":
         # The live fabric REST base URL (loopback). Escape hatch for tools that
         # want raw fabric — most callers should use the ops above instead.
@@ -264,6 +311,7 @@ def stream_run(req, send):
                 pat, inp, model, vendor,
                 policy=pol, tools=tools,
                 on_chunk=on_chunk, on_event=on_event,
+                confirm=_confirm_callback_for_stream(),
                 max_turns=max_turns, variables=req.get("variables"),
                 ollama_url=pol["ollama"]["url"], log=log)
         except Exception as e:

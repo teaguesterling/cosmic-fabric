@@ -166,6 +166,16 @@ impl cosmic::Application for Window {
                             r.push_str(&s);
                         }
                     }
+                    // Tool events from a tool-using pattern routed to the
+                    // popup. Inline as plain text — the popup is a quick-look
+                    // surface, not the full chat/loom trace rendering.
+                    daemon::RunEvent::ToolCall { name, .. }
+                    | daemon::RunEvent::ToolResult { name, .. }
+                    | daemon::RunEvent::ToolConfirmRequired { name, .. } => {
+                        let r = self.result.get_or_insert_with(String::new);
+                        if !r.is_empty() && !r.ends_with('\n') { r.push('\n'); }
+                        r.push_str(&format!("[tool: {name}]\n"));
+                    }
                     daemon::RunEvent::Done(rr) => {
                         self.running = false;
                         self.pending = None;

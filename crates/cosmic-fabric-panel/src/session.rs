@@ -36,6 +36,11 @@ pub struct SessionApp {
     run_seq: u64,
     streaming: bool,
     error: Option<String>,
+    /// A panel-confirm tool is waiting on the user (id, command preview).
+    /// While `Some`, the chat surface renders an inline Approve/Deny card
+    /// over the input area. The daemon-side run-loop thread is blocked on
+    /// the matching tool-confirm event with a 60s timeout.
+    pending_confirm: Option<(String, String)>,
 }
 
 #[derive(Debug, Clone)]
@@ -44,6 +49,31 @@ pub enum Message {
     Send,
     ChatEvent(daemon::RunEvent),
     NewSession,
+    /// User clicked Approve/Deny on a pending confirm card.
+    ConfirmTool { id: String, approved: bool },
+    /// The tool_confirm op completed (ack from daemon).
+    ConfirmAcked(Result<(), String>),
+}
+
+/// One-line, ≤80-char representation of a tool's args for inline display.
+/// `{"url": "https://wikipedia/Tokyo"}` → `url="https://wikipedia/Tokyo"`.
+fn compact_args(args: &serde_json::Value) -> String {
+    let obj = match args.as_object() {
+        Some(o) => o,
+        None => return args.to_string(),
+    };
+    let parts: Vec<String> = obj
+        .iter()
+        .map(|(k, v)| match v {
+            serde_json::Value::String(s) => {
+                let s = if s.len() > 60 { format!("{}…", &s[..60]) } else { s.clone() };
+                format!("{k}={s:?}")
+            }
+            _ => format!("{k}={v}"),
+        })
+        .collect();
+    let joined = parts.join(", ");
+    if joined.len() > 80 { format!("{}…", &joined[..80]) } else { joined }
 }
 
 fn new_session_name() -> String {
@@ -73,6 +103,7 @@ impl cosmic::Application for SessionApp {
             run_seq: 0,
             streaming: false,
             error: None,
+            pending_confirm: None,
         };
         (me, app::Task::none())
     }
@@ -118,6 +149,34 @@ impl cosmic::Application for SessionApp {
                         last.1.push_str(&c);
                     }
                 }
+                daemon::RunEvent::ToolCall { name, args, .. } => {
+                    // Inline annotation on the current assistant turn, so the
+                    // user sees what's happening as the model decides it.
+                    // Phase 1 styling: plain caption lines; pill rendering is
+                    // a follow-on polish slice.
+                    if let Some(last) = self.messages.last_mut() {
+                        let args_summary = compact_args(&args);
+                        if !last.1.is_empty() && !last.1.ends_with('\n') {
+                            last.1.push('\n');
+                        }
+                        last.1.push_str(&format!("\u{1F50E} {name}({args_summary})\n"));
+                    }
+                }
+                daemon::RunEvent::ToolResult { name, summary, .. } => {
+                    if let Some(last) = self.messages.last_mut() {
+                        last.1.push_str(&format!("  \u{2713} {name}: {summary}\n"));
+                    }
+                }
+                daemon::RunEvent::ToolConfirmRequired { id, name, command_preview, .. } => {
+                    // Surface the request inline AND set pending_confirm so the
+                    // view renders an Approve/Deny card. The daemon's run-loop
+                    // is blocked waiting for our `tool_confirm` ack.
+                    if let Some(last) = self.messages.last_mut() {
+                        last.1.push_str(&format!(
+                            "\u{26A0} {name} wants to run: {command_preview}\n"));
+                    }
+                    self.pending_confirm = Some((id, command_preview));
+                }
                 daemon::RunEvent::Done(_) => {
                     self.streaming = false;
                     self.pending = None;
@@ -139,6 +198,24 @@ impl cosmic::Application for SessionApp {
                 self.error = None;
                 self.streaming = false;
                 self.pending = None;
+                self.pending_confirm = None;
+            }
+            Message::ConfirmTool { id, approved } => {
+                self.pending_confirm = None;
+                // Append a brief audit line to the current assistant turn so
+                // there's a visible record of what the user decided.
+                if let Some(last) = self.messages.last_mut() {
+                    let v = if approved { "approved" } else { "denied" };
+                    last.1.push_str(&format!("  \u{2192} {v}\n"));
+                }
+                return cosmic::Task::perform(
+                    daemon::send_tool_confirm(id, approved),
+                    |r| cosmic::Action::App(Message::ConfirmAcked(r)),
+                );
+            }
+            Message::ConfirmAcked(Ok(())) => {}  // ack — daemon got it, loop continues
+            Message::ConfirmAcked(Err(e)) => {
+                self.error = Some(format!("confirm failed: {e}"));
             }
         }
         app::Task::none()
@@ -204,6 +281,29 @@ impl cosmic::Application for SessionApp {
             .push(scrollable(convo).height(Length::Fill).width(Length::Fill));
         if let Some(e) = &self.error {
             col = col.push(text::caption(e.clone()));
+        }
+        // Inline confirm card above the input area when a panel-confirm tool
+        // is pending. Daemon's run-loop is blocked on the matching event —
+        // user must click before the 60s timeout fires.
+        if let Some((id, preview)) = &self.pending_confirm {
+            let approve_id = id.clone();
+            let deny_id = id.clone();
+            let preview_txt = preview.clone();
+            let card = Column::new()
+                .spacing(s.space_xxs)
+                .push(text::heading("\u{26A0} Tool wants to run"))
+                .push(text::body(preview_txt))
+                .push(
+                    cosmic::iced::widget::row![
+                        button::standard("Deny").on_press(
+                            Message::ConfirmTool { id: deny_id, approved: false }),
+                        cosmic::widget::Space::new().width(Length::Fixed(8.0)),
+                        button::suggested("Approve").on_press(
+                            Message::ConfirmTool { id: approve_id, approved: true }),
+                    ]
+                    .align_y(Alignment::Center),
+                );
+            col = col.push(container(card).padding(s.space_xs).class(theme::Container::Card));
         }
         col = col.push(input_row);
 

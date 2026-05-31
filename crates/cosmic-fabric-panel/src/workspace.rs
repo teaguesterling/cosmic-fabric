@@ -284,6 +284,29 @@ pub enum Message {
     DismissError,
 }
 
+/// One-line, ≤80-char rendering of a tool's args JSON for inline display.
+/// `{"url":"https://wikipedia/Tokyo"}` → `url="https://wikipedia/Tokyo"`.
+/// (Same shape as the helper in session.rs — kept in both surfaces so each
+/// can drift its formatting independently if needed.)
+fn tool_args_summary(args: &serde_json::Value) -> String {
+    let obj = match args.as_object() {
+        Some(o) => o,
+        None => return args.to_string(),
+    };
+    let parts: Vec<String> = obj
+        .iter()
+        .map(|(k, v)| match v {
+            serde_json::Value::String(s) => {
+                let s = if s.len() > 60 { format!("{}…", &s[..60]) } else { s.clone() };
+                format!("{k}={s:?}")
+            }
+            _ => format!("{k}={v}"),
+        })
+        .collect();
+    let joined = parts.join(", ");
+    if joined.len() > 80 { format!("{}…", &joined[..80]) } else { joined }
+}
+
 /// Humanize a pattern name for display (shared with the popup): separators →
 /// spaces, first letter upper. Pack-name-agnostic.
 pub fn pretty(name: &str) -> String {
@@ -508,6 +531,25 @@ impl cosmic::Application for Workspace {
                     if let Some(r) = self.response.as_mut() {
                         r.push_str(&s);
                     }
+                }
+                daemon::RunEvent::ToolCall { name, args, .. } => {
+                    // Inline trace as the model decides. Phase 1: prepended to
+                    // the response text; a collapsed trace card is later polish.
+                    let r = self.response.get_or_insert_with(String::new);
+                    if !r.is_empty() && !r.ends_with('\n') {
+                        r.push('\n');
+                    }
+                    r.push_str(&format!("\u{1F50E} {name}({})\n", tool_args_summary(&args)));
+                }
+                daemon::RunEvent::ToolResult { name, summary, .. } => {
+                    let r = self.response.get_or_insert_with(String::new);
+                    r.push_str(&format!("  \u{2713} {name}: {summary}\n"));
+                }
+                daemon::RunEvent::ToolConfirmRequired { name, command_preview, .. } => {
+                    // Phase 1 placeholder — modal handling is Task 23.
+                    let r = self.response.get_or_insert_with(String::new);
+                    r.push_str(&format!(
+                        "\u{26A0} {name} requires confirmation: {command_preview}\n"));
                 }
                 daemon::RunEvent::Done(rr) => {
                     self.running = false;

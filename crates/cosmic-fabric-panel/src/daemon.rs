@@ -112,6 +112,19 @@ pub async fn assemble(pattern: String, input: String) -> Result<String, String> 
         .ok_or_else(|| "no prompt in response".to_string())
 }
 
+/// Send a `tool_confirm` ack to the daemon (separate connection from the run
+/// stream, so the run-loop thread can keep blocking on its own event). The id
+/// must match what came on a `RunEvent::ToolConfirmRequired`.
+pub async fn send_tool_confirm(id: String, approved: bool) -> Result<(), String> {
+    let v = call(serde_json::json!({
+        "op": "tool_confirm", "id": id, "approved": approved
+    })).await?;
+    if let Some(e) = v.get("error").and_then(|x| x.as_str()) {
+        return Err(e.to_string());
+    }
+    Ok(())
+}
+
 /// Fetch a web page as text via the daemon (`scrape` = Jina markdown, or
 /// `readability`). Returns (text, char_count).
 pub async fn fetch_url(url: String, mode: String) -> Result<(String, usize), String> {
@@ -151,8 +164,47 @@ pub async fn run_image(
 #[derive(Debug, Clone)]
 pub enum RunEvent {
     Chunk(String),
+    /// A tool was invoked. `args` is the model-supplied JSON value (typically
+    /// an object). `id` correlates with the matching `ToolResult`.
+    ToolCall { name: String, args: serde_json::Value, id: String },
+    /// A tool's execution completed. `summary` is a short, panel-displayable
+    /// preview (truncated by the daemon).
+    ToolResult { name: String, id: String, summary: String },
+    /// A `panel-confirm`-mode tool needs user approval before execution.
+    /// Surfaces fire a `tool_confirm` op back to the daemon (separate
+    /// connection) with `id` + an `approved: bool`. Phase 2 work — daemon
+    /// currently auto-denies if no confirm hook is wired (Phase 1 default).
+    ToolConfirmRequired {
+        name: String,
+        args: serde_json::Value,
+        id: String,
+        command_preview: String,
+    },
     Done(RunResult),
     Error(String),
+}
+
+/// Parse a tool-event payload (the inner object from `{"tool": …}` or the
+/// `{"event":"tool", …}` envelope) into the matching `RunEvent` variant.
+/// Returns None for unknown / malformed shapes (forward-compat).
+fn tool_event_from_obj(obj: &serde_json::Value) -> Option<RunEvent> {
+    let typ = obj.get("type")?.as_str()?;
+    let name = obj.get("name").and_then(|x| x.as_str()).unwrap_or("").to_string();
+    let id = obj.get("id").and_then(|x| x.as_str()).unwrap_or("").to_string();
+    let args = obj.get("args").cloned().unwrap_or(serde_json::Value::Null);
+    match typ {
+        "tool_call" => Some(RunEvent::ToolCall { name, args, id }),
+        "tool_result" => {
+            let summary = obj.get("summary").and_then(|x| x.as_str()).unwrap_or("").to_string();
+            Some(RunEvent::ToolResult { name, id, summary })
+        }
+        "tool_confirm_required" => {
+            let command_preview = obj.get("command_preview")
+                .and_then(|x| x.as_str()).unwrap_or("").to_string();
+            Some(RunEvent::ToolConfirmRequired { name, args, id, command_preview })
+        }
+        _ => None,
+    }
 }
 
 /// Stream a pattern run from the daemon: yields a `Chunk` per fragment, then a
@@ -213,6 +265,14 @@ fn stream_request(req: serde_json::Value) -> impl cosmic::iced::futures::Stream<
             if let Some(c) = v.get("chunk").and_then(|x| x.as_str()) {
                 if output.send(RunEvent::Chunk(c.to_string())).await.is_err() {
                     break;
+                }
+            } else if let Some(tool_obj) = v.get("tool") {
+                // {"tool": {type, name, args, id, ...}} from the daemon's
+                // tool-loop branch — translate into a typed RunEvent.
+                if let Some(ev) = tool_event_from_obj(tool_obj) {
+                    if output.send(ev).await.is_err() {
+                        break;
+                    }
                 }
             } else if v.get("done").is_some() {
                 let rr: RunResult = serde_json::from_value(v).unwrap_or_default();

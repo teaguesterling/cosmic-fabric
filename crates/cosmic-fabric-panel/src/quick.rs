@@ -113,6 +113,18 @@ impl cosmic::Application for QuickApp {
                         r.push_str(&c);
                     }
                 }
+                // Tool events: quick-action surface doesn't route to
+                // tool-using patterns yet (single-shot is the kit's whole
+                // point). Render the tool trace inline as plain text so the
+                // user sees what happened even if a pattern they routed here
+                // happens to be tool-enabled.
+                daemon::RunEvent::ToolCall { name, .. }
+                | daemon::RunEvent::ToolResult { name, .. }
+                | daemon::RunEvent::ToolConfirmRequired { name, .. } => {
+                    let r = self.result.get_or_insert_with(String::new);
+                    if !r.is_empty() && !r.ends_with('\n') { r.push('\n'); }
+                    r.push_str(&format!("[tool: {name}]\n"));
+                }
                 daemon::RunEvent::Done(rr) => {
                     self.running = false;
                     self.pending = None;
