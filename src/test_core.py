@@ -451,5 +451,171 @@ class HtmlToText(unittest.TestCase):
         self.assertNotIn("<p>", t)
 
 
+class WoollamaSeam(unittest.TestCase):
+    """The woollama inference seam (slice 1): model-name mapping, option
+    translation, discovery, and the OpenAI request/SSE parsing — all offline."""
+
+    def _fake_conn(self, payload):
+        """A fake http.client connection whose getresponse() yields canned bytes
+        (a BytesIO subclass works for json.load, line iteration, and .status)."""
+        import io
+        data = payload if isinstance(payload, bytes) else payload.encode()
+        class _Resp(io.BytesIO):
+            status = 200
+        class _Conn:
+            def request(self, *a, **k): pass
+            def getresponse(self): return _Resp(data)
+            def close(self): pass
+        return _Conn()
+
+    def test_model_mapping(self):
+        self.assertEqual(core.woollama_model("qwen3:14b-iq4xs", "Ollama"),
+                         "ollama/qwen3:14b-iq4xs")
+        self.assertEqual(core.woollama_model("claude-sonnet-4-6", "Anthropic"),
+                         "anthropic/claude-sonnet-4-6")
+        self.assertEqual(core.woollama_model("x:1b", None), "ollama/x:1b")  # default prefix
+
+    def test_to_openai_options_renames(self):
+        o = core.to_openai_options({"temperature": 0.4, "top_p": 0.9,
+                                    "frequency_penalty": 0.1, "presence_penalty": 0.2})
+        self.assertAlmostEqual(o["temperature"], 0.4)
+        self.assertAlmostEqual(o["top_p"], 0.9)
+        self.assertAlmostEqual(o["frequency_penalty"], 0.1)
+        self.assertAlmostEqual(o["presence_penalty"], 0.2)
+
+    def test_to_openai_options_drops_fabric_only(self):
+        # fabric-only knobs (thinking/suppressThink/raw) must NOT leak to OpenAI.
+        o = core.to_openai_options({"thinking": "off", "extra": ["--raw"]})
+        self.assertEqual(o, {})
+
+    def test_woollama_enabled(self):
+        self.assertFalse(core.woollama_enabled({}))
+        self.assertFalse(core.woollama_enabled({"woollama": {"enabled": False}}))
+        self.assertTrue(core.woollama_enabled({"woollama": {"enabled": True}}))
+
+    def test_resolve_address_env_override(self):
+        import os as _os
+        from unittest.mock import patch
+        with patch.dict(_os.environ, {"COSMIC_FABRIC_WOOLLAMA_ADDRESS": "127.0.0.1:9999"}):
+            self.assertEqual(core.resolve_woollama_address(), "127.0.0.1:9999")
+
+    def test_resolve_address_from_file(self):
+        import os as _os, tempfile
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as td:
+            with open(_os.path.join(td, "woollama.addr"), "w") as f:
+                f.write("127.0.0.1:48291\n")
+            env = {k: v for k, v in _os.environ.items()
+                   if k != "COSMIC_FABRIC_WOOLLAMA_ADDRESS"}
+            env["XDG_RUNTIME_DIR"] = td
+            with patch.dict(_os.environ, env, clear=True):
+                self.assertEqual(core.resolve_woollama_address(), "127.0.0.1:48291")
+
+    def test_resolve_address_none_when_absent(self):
+        import os as _os, tempfile
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as td:
+            env = {k: v for k, v in _os.environ.items()
+                   if k != "COSMIC_FABRIC_WOOLLAMA_ADDRESS"}
+            env["XDG_RUNTIME_DIR"] = td  # empty dir → no .addr
+            with patch.dict(_os.environ, env, clear=True):
+                self.assertIsNone(core.resolve_woollama_address())
+
+    def _empty_runtime_env(self, td):
+        import os as _os
+        env = {k: v for k, v in _os.environ.items()
+               if k != "COSMIC_FABRIC_WOOLLAMA_ADDRESS"}
+        env["XDG_RUNTIME_DIR"] = td
+        return env
+
+    def test_client_no_server_is_not_alive(self):
+        import os as _os, tempfile
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as td:  # no .sock / .addr → no server
+            with patch.dict(_os.environ, self._empty_runtime_env(td), clear=True):
+                c = core.WoollamaClient()
+                self.assertIsNone(c.url)
+                self.assertFalse(c.alive())
+                with self.assertRaises(RuntimeError):
+                    c.chat("ollama/x", "hi")
+
+    def test_transport_prefers_unix_socket(self):
+        import os as _os, tempfile
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as td:
+            sock = _os.path.join(td, "woollama.sock")
+            open(sock, "w").close()
+            with open(_os.path.join(td, "woollama.addr"), "w") as f:
+                f.write("127.0.0.1:5\n")  # both present → socket wins
+            with patch.dict(_os.environ, self._empty_runtime_env(td), clear=True):
+                self.assertEqual(core.resolve_woollama_transport(), ("unix", sock))
+
+    def test_transport_falls_back_to_tcp(self):
+        import os as _os, tempfile
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as td:
+            with open(_os.path.join(td, "woollama.addr"), "w") as f:
+                f.write("127.0.0.1:43251\n")  # no socket → use the .addr
+            with patch.dict(_os.environ, self._empty_runtime_env(td), clear=True):
+                self.assertEqual(core.resolve_woollama_transport(),
+                                 ("tcp", "127.0.0.1", 43251))
+
+    def test_transport_explicit_address_wins(self):
+        import os as _os, tempfile
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as td:
+            open(_os.path.join(td, "woollama.sock"), "w").close()  # present but ignored
+            with patch.dict(_os.environ, self._empty_runtime_env(td), clear=True):
+                self.assertEqual(core.resolve_woollama_transport("127.0.0.1:9001"),
+                                 ("tcp", "127.0.0.1", 9001))
+
+    def test_transport_none_when_absent(self):
+        import os as _os, tempfile
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as td:
+            with patch.dict(_os.environ, self._empty_runtime_env(td), clear=True):
+                self.assertIsNone(core.resolve_woollama_transport())
+
+    def test_chat_parses_openai_response(self):
+        body = json.dumps({"choices": [{"message": {"role": "assistant",
+                                                    "content": "  hello there  "}}]})
+        c = core.WoollamaClient(transport=("tcp", "127.0.0.1", 1))
+        c._connect = lambda timeout: self._fake_conn(body)
+        self.assertEqual(c.chat("ollama/x", "hi"), "hello there")
+
+    def test_chat_stream_parses_sse(self):
+        # OpenAI SSE: data lines (some empty deltas), blank lines, then [DONE].
+        sse = (
+            'data: {"choices":[{"delta":{"role":"assistant"}}]}\n'
+            '\n'
+            'data: {"choices":[{"delta":{"content":"Hel"}}]}\n'
+            'data: {"choices":[{"delta":{"content":"lo"}}]}\n'
+            ': a comment line that is not data\n'
+            'data: {"choices":[{"delta":{}}]}\n'
+            'data: [DONE]\n'
+        )
+        c = core.WoollamaClient(transport=("tcp", "127.0.0.1", 1))
+        c._connect = lambda timeout: self._fake_conn(sse)
+        chunks = []
+        out = c.chat_stream("ollama/x", "hi", on_chunk=chunks.append)
+        self.assertEqual(out, "Hello")
+        self.assertEqual(chunks, ["Hel", "lo"])
+
+    def test_unix_transport_uses_af_unix_connection(self):
+        # An ('unix', path) transport produces an AF_UNIX-backed connection.
+        c = core.WoollamaClient(transport=("unix", "/run/user/0/woollama.sock"))
+        conn = c._connect(2)
+        self.assertIsInstance(conn, core._UnixHTTPConnection)
+        self.assertEqual(c.url, "unix:/run/user/0/woollama.sock")
+
+    def test_request_body_shape(self):
+        c = core.WoollamaClient(transport=("tcp", "x", 1))
+        body = c._body("ollama/qwen3", "the prompt", {"temperature": 0.3}, True)
+        self.assertEqual(body["model"], "ollama/qwen3")
+        self.assertEqual(body["messages"], [{"role": "user", "content": "the prompt"}])
+        self.assertTrue(body["stream"])
+        self.assertAlmostEqual(body["temperature"], 0.3)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -71,6 +71,41 @@ def _confirm_callback_for_stream():
     return confirm
 
 
+# ---------- woollama inference seam (slice 1) -------------------------------
+# A plain run can route its inference through the woollama router instead of
+# fabric's /chat: fabric assembles the prompt, woollama infers. Gated by the
+# [woollama] policy block, with automatic fallback to fabric (disabled, no live
+# server, an unsupported request feature, or any error). Sessions/tools/image
+# runs stay on fabric this slice — see doc/integration-plan + the seam plan.
+
+def _woollama_eligible(req):
+    """A run is woollama-eligible only if it uses none of fabric's /chat-only
+    features (named context, prompt strategy, output language, model-side web
+    search) — the router path doesn't honor them, so those go to fabric."""
+    return not (req.get("context") or req.get("strategy")
+                or req.get("language") or req.get("search"))
+
+
+def _woollama_sync(pol, pat, inp, model, vendor, inst, variables):
+    """Run the plain inference path through woollama. Returns the output text, or
+    None to mean 'fall back to fabric' (disabled / no server / error)."""
+    if not core.woollama_enabled(pol):
+        return None
+    wool = core.WoollamaClient(address=(pol.get("woollama") or {}).get("address"), log=log)
+    if not wool.alive():
+        log("woollama enabled but no server discoverable; falling back to fabric")
+        return None
+    try:
+        prompt = FAB.assemble_prompt(pat, inp, variables) if pat else inp
+        wmodel = core.woollama_model(model, vendor)
+        out = wool.chat(wmodel, prompt, core.to_openai_options(inst))
+        log(f"run via woollama model={wmodel} → {len(out)}ch")
+        return out
+    except Exception as e:
+        log(f"woollama path failed ({e}); falling back to fabric")
+        return None
+
+
 def broadcast(event):
     with SUBS_LOCK:
         subs = list(SUBS)
@@ -235,6 +270,15 @@ def handle(req):
         opts = core.inst_to_options(inst)
         is_ollama = (vendor or "").lower() == "ollama"
         mctx = inst.get("ctx") or (core.pick_ctx(inp) if is_ollama else None)
+        # woollama inference seam (slice 1): plain runs route through the router
+        # (fabric assembles → woollama infers). fabric-specific ChatRequest
+        # features aren't honored on the router path, so those fall through.
+        if _woollama_eligible(req):
+            wout = _woollama_sync(pol, pat, inp, model, vendor, inst, req.get("variables"))
+            if wout is not None:
+                pct = core.gpu_placement(model, pol["ollama"]["url"]) if is_ollama else None
+                return {"output": wout, "model": model, "vendor": vendor, "backend": "woollama",
+                        "placement": pct, "warn_below": pol["ollama"].get("warn_below_gpu", 99)}
         log(f"run pattern={pat} model={model} vendor={vendor} input={len(inp)}ch ctx={mctx} opts={opts}")
         try:
             out = FAB.run(pat, inp, model, vendor, req.get("variables"), opts, model_ctx=mctx,
@@ -245,7 +289,7 @@ def handle(req):
             return {"error": str(e)}
         pct = core.gpu_placement(model, pol["ollama"]["url"]) if (vendor or "").lower() == "ollama" else None
         log(f"run done: {len(out)}ch placement={pct}")
-        return {"output": out, "model": model, "vendor": vendor,
+        return {"output": out, "model": model, "vendor": vendor, "backend": "fabric",
                 "placement": pct, "warn_below": pol["ollama"].get("warn_below_gpu", 99)}
     return {"error": f"unknown op {op!r}"}
 
@@ -330,19 +374,43 @@ def stream_run(req, send):
             send({"done": True, **done})
         return
 
-    mctx = inst.get("ctx") or (core.pick_ctx(inp) if (vendor or "").lower() == "ollama" else None)
-    try:
-        out = FAB.run(pat, inp, model, vendor, req.get("variables"), opts,
-                      on_chunk=on_chunk, model_ctx=mctx, session=session,
-                      context=req.get("context"), strategy=req.get("strategy"),
-                      language=req.get("language"), search=bool(req.get("search")))
-    except Exception as e:
-        log(f"run-stream error: {e}")
-        (broadcast if bcast else send)({"event": "error", "error": str(e)} if bcast else {"error": str(e)})
-        return
+    # woollama inference seam (slice 1): plain, session-less streaming runs go
+    # through the router (fabric assembles → woollama streams). A live-server
+    # pre-check means 'no server' falls back cleanly before any chunk is sent;
+    # a mid-stream failure surfaces as an error rather than double-streaming.
+    backend = "fabric"
+    wool = (core.WoollamaClient(address=(pol.get("woollama") or {}).get("address"), log=log)
+            if (core.woollama_enabled(pol) and _woollama_eligible(req) and not session)
+            else None)
+    if wool is not None and wool.alive():
+        try:
+            prompt = FAB.assemble_prompt(pat, inp, req.get("variables")) if pat else inp
+            wmodel = core.woollama_model(model, vendor)
+            out = wool.chat_stream(wmodel, prompt, on_chunk=on_chunk,
+                                   options=core.to_openai_options(inst))
+            backend = "woollama"
+            log(f"run-stream via woollama model={wmodel} → {len(out)}ch")
+        except Exception as e:
+            log(f"run-stream woollama error: {e}")
+            (broadcast if bcast else send)({"event": "error", "error": str(e)} if bcast else {"error": str(e)})
+            return
+    else:
+        if wool is not None:
+            log("woollama enabled but no server discoverable; falling back to fabric")
+        mctx = inst.get("ctx") or (core.pick_ctx(inp) if (vendor or "").lower() == "ollama" else None)
+        try:
+            out = FAB.run(pat, inp, model, vendor, req.get("variables"), opts,
+                          on_chunk=on_chunk, model_ctx=mctx, session=session,
+                          context=req.get("context"), strategy=req.get("strategy"),
+                          language=req.get("language"), search=bool(req.get("search")))
+        except Exception as e:
+            log(f"run-stream error: {e}")
+            (broadcast if bcast else send)({"event": "error", "error": str(e)} if bcast else {"error": str(e)})
+            return
     pct = core.gpu_placement(model, pol["ollama"]["url"]) if (vendor or "").lower() == "ollama" else None
-    log(f"run-stream done: placement={pct} broadcast={bcast}")
-    done = {"model": model, "vendor": vendor, "placement": pct, "warn_below": warn_below}
+    log(f"run-stream done: placement={pct} broadcast={bcast} backend={backend}")
+    done = {"model": model, "vendor": vendor, "placement": pct, "warn_below": warn_below,
+            "backend": backend}
     if bcast:
         broadcast({"event": "done", **done})
         notify_user(out, pat)  # one alert, from the daemon (not per-panel)
