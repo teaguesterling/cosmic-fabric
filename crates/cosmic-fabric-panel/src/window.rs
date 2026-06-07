@@ -305,8 +305,12 @@ impl cosmic::Application for Window {
                     format!(" \u{00b7} {p:.0}% GPU{warn}")
                 })
                 .unwrap_or_default();
+            let wool = s
+                .woollama_badge()
+                .map(|b| format!("  \u{00b7}  {b}"))
+                .unwrap_or_default();
             col = col.push(padded_control(text::caption(format!(
-                "serve {serve}  \u{00b7}  {model}{gpu}"
+                "serve {serve}  \u{00b7}  {model}{gpu}{wool}"
             ))));
         }
 
