@@ -1,0 +1,218 @@
+#!/usr/bin/env python3
+"""mock-woollamad — a tiny, deterministic stand-in for the woollama router, for
+testing the cosmic-fabric integration without the real woollama (owned by a
+separate project) or a running ollama.
+
+It speaks the subset cosmic-fabric uses and binds the SAME discovery artifacts as
+real woollama, so `core.resolve_woollama_transport` finds it identically:
+
+  * Unix socket  $XDG_RUNTIME_DIR/woollama.sock   (mode 0600 — the preferred path)
+  * TCP loopback 127.0.0.1:<free>  + .addr file   (the fallback path)
+
+Endpoints:
+  GET  /v1/models             → a canned model list (ollama/* + woollama/*)
+  POST /v1/chat/completions   → a deterministic completion; `stream:true` → SSE
+
+Responses are deterministic so tests can assert exact text. By default the
+assistant replies with a fixed string; `--echo` echoes the last user message
+instead (handy for confirming the assembled prompt reached the router).
+
+Run:  python3 src/mock-woollamad [--reply TEXT] [--echo]   (Ctrl-C to stop)
+
+Isolation: it writes to $XDG_RUNTIME_DIR (or /tmp). To avoid clobbering a real
+woollama's discovery files, point it at a scratch dir:
+    XDG_RUNTIME_DIR=$(mktemp -d) python3 src/mock-woollamad
+It refuses to start if a woollama already answers on the socket.
+"""
+import argparse
+import http.client
+import http.server
+import json
+import os
+import socket
+import socketserver
+import sys
+import threading
+
+REPLY = "mock-woollama: ok"
+ECHO = False
+
+
+def _runtime_dir():
+    return os.environ.get("XDG_RUNTIME_DIR") or "/tmp"
+
+
+def _addr_file():
+    return os.path.join(_runtime_dir(), "woollama.addr")
+
+
+def _sock_path():
+    return os.path.join(_runtime_dir(), "woollama.sock")
+
+
+def _reply_for(body):
+    if ECHO:
+        msgs = body.get("messages") or []
+        for m in reversed(msgs):
+            if m.get("role") == "user":
+                return m.get("content", "") or ""
+        return ""
+    return REPLY
+
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, *a):
+        pass  # quiet; this is a test fixture
+
+    def _json(self, obj, status=200):
+        data = json.dumps(obj).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_GET(self):
+        if self.path == "/v1/models":
+            self._json({"object": "list", "data": [
+                {"id": "ollama/mock-model", "object": "model", "owned_by": "ollama"},
+                {"id": "woollama/echo", "object": "model", "owned_by": "woollama"},
+            ]})
+        else:
+            self._json({"error": "not found"}, 404)
+
+    def do_POST(self):
+        n = int(self.headers.get("Content-Length") or 0)
+        try:
+            body = json.loads(self.rfile.read(n) or b"{}")
+        except Exception:
+            body = {}
+        if self.path != "/v1/chat/completions":
+            self._json({"error": "not found"}, 404)
+            return
+        model = body.get("model", "ollama/mock-model")
+        reply = _reply_for(body)
+        if body.get("stream"):
+            self._sse(model, reply)
+        else:
+            self._json({
+                "id": "chatcmpl-mock", "object": "chat.completion", "model": model,
+                "choices": [{"index": 0, "finish_reason": "stop",
+                             "message": {"role": "assistant", "content": reply}}],
+            })
+
+    def _sse(self, model, reply):
+        # Close-delimited SSE: simplest envelope http.client reads cleanly to EOF.
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.close_connection = True
+        mid = max(1, len(reply) // 2)
+        for ch in (reply[:mid], reply[mid:]):
+            if not ch:
+                continue
+            ev = {"id": "chatcmpl-mock", "object": "chat.completion.chunk",
+                  "model": model, "choices": [{"index": 0, "delta": {"content": ch}}]}
+            self.wfile.write(f"data: {json.dumps(ev)}\n\n".encode())
+            self.wfile.flush()
+        self.wfile.write(b"data: [DONE]\n\n")
+        self.wfile.flush()
+
+
+class _TCPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+
+class _UnixServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
+    address_family = socket.AF_UNIX
+    daemon_threads = True
+    allow_reuse_address = True
+
+    def server_bind(self):
+        # AF_UNIX bind with 0600; skip HTTPServer's host/port (getfqdn) logic.
+        try:
+            os.unlink(self.server_address)
+        except FileNotFoundError:
+            pass
+        old = os.umask(0o177)
+        try:
+            socketserver.TCPServer.server_bind(self)
+        finally:
+            os.umask(old)
+        os.chmod(self.server_address, 0o600)
+        self.server_name, self.server_port = "localhost", 0
+
+
+def _woollama_already_listening():
+    """Don't clobber a real woollama: if one answers on the socket, bail."""
+    sp = _sock_path()
+    if not os.path.exists(sp):
+        return False
+    try:
+        c = http.client.HTTPConnection("localhost")
+        c.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        c.sock.settimeout(1)
+        c.sock.connect(sp)
+        c.request("GET", "/v1/models")
+        c.getresponse().read()
+        c.close()
+        return True
+    except OSError:
+        return False
+
+
+def main():
+    global REPLY, ECHO
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--reply", default=REPLY, help="canned assistant reply")
+    ap.add_argument("--echo", action="store_true", help="echo the last user message")
+    args = ap.parse_args()
+    REPLY, ECHO = args.reply, args.echo
+
+    if _woollama_already_listening():
+        print("a woollama already answers on the socket; refusing to clobber it.\n"
+              "Stop it first, or run with XDG_RUNTIME_DIR=$(mktemp -d).", file=sys.stderr)
+        return 2
+
+    tcp = _TCPServer(("127.0.0.1", 0), Handler)
+    host, port = tcp.server_address
+    with open(_addr_file(), "w") as f:
+        f.write(f"{host}:{port}\n")
+
+    unix = None
+    try:
+        unix = _UnixServer(_sock_path(), Handler)
+    except OSError as e:
+        print(f"unix socket unavailable ({e}); serving TCP-only", file=sys.stderr)
+
+    threading.Thread(target=tcp.serve_forever, daemon=True).start()
+    if unix is not None:
+        threading.Thread(target=unix.serve_forever, daemon=True).start()
+
+    mode = "echo" if ECHO else f"reply={REPLY!r}"
+    print(f"mock-woollamad listening ({mode})", flush=True)
+    print(f"  unix socket:   {_sock_path() if unix else '(unavailable)'}", flush=True)
+    print(f"  HTTP loopback: http://{host}:{port}", flush=True)
+    print(f"  addr file:     {_addr_file()}", flush=True)
+    try:
+        threading.Event().wait()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        tcp.shutdown()
+        if unix is not None:
+            unix.shutdown()
+        for p in (_addr_file(), _sock_path()):
+            try:
+                os.unlink(p)
+            except FileNotFoundError:
+                pass
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

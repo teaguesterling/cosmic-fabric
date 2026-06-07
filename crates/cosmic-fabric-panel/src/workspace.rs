@@ -920,7 +920,11 @@ impl Workspace {
                 format!("  \u{00b7}  {p:.0}% GPU{warn}")
             })
             .unwrap_or_default();
-        format!("serve {serve}  \u{00b7}  {model}{gpu}")
+        let wool = st
+            .woollama_badge()
+            .map(|b| format!("  \u{00b7}  {b}"))
+            .unwrap_or_default();
+        format!("serve {serve}  \u{00b7}  {model}{gpu}{wool}")
     }
 
     fn recompute_active(&mut self) {

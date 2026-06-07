@@ -57,6 +57,17 @@ pub struct Vram {
     pub total: u64,
 }
 
+/// The woollama inference-seam snapshot from the `status` op: whether routing is
+/// enabled, whether a router is reachable, the resolved endpoint, and which
+/// backend a plain run uses right now (`active_backend`).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct Woollama {
+    pub enabled: bool,
+    pub reachable: bool,
+    pub endpoint: Option<String>,
+    pub active_backend: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Status {
     pub serve: bool,
@@ -65,6 +76,25 @@ pub struct Status {
     pub vram: Option<Vram>,
     pub default_model: Option<String>,
     pub default_vendor: Option<String>,
+    #[serde(default)]
+    pub woollama: Woollama,
+}
+
+impl Status {
+    /// A short routing badge for the status line, shown only when woollama
+    /// routing is enabled: `◆ woollama` when the router is reachable (plain runs
+    /// route through it), `◇ woollama down` when it isn't (runs fall back to
+    /// fabric). `None` when routing is off — fabric is the default, no clutter.
+    pub fn woollama_badge(&self) -> Option<String> {
+        if !self.woollama.enabled {
+            return None;
+        }
+        Some(if self.woollama.reachable {
+            "\u{25c6} woollama".to_string()
+        } else {
+            "\u{25c7} woollama down".to_string()
+        })
+    }
 }
 
 pub async fn status() -> Result<Status, String> {
@@ -406,5 +436,49 @@ pub fn set_clipboard(text: &str) {
             let _ = si.write_all(text.as_bytes());
         }
         let _ = c.wait();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn wool(enabled: bool, reachable: bool) -> Status {
+        Status {
+            woollama: Woollama { enabled, reachable, ..Default::default() },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn badge_hidden_when_disabled() {
+        assert_eq!(Status::default().woollama_badge(), None);
+        assert_eq!(wool(false, true).woollama_badge(), None);
+    }
+
+    #[test]
+    fn badge_active_when_enabled_and_reachable() {
+        assert_eq!(wool(true, true).woollama_badge().as_deref(), Some("\u{25c6} woollama"));
+    }
+
+    #[test]
+    fn badge_down_when_enabled_but_unreachable() {
+        assert_eq!(wool(true, false).woollama_badge().as_deref(), Some("\u{25c7} woollama down"));
+    }
+
+    #[test]
+    fn status_parses_woollama_and_back_compat() {
+        let v = serde_json::json!({
+            "serve": true,
+            "woollama": {"enabled": true, "reachable": true,
+                         "endpoint": "unix:/run/woollama.sock", "active_backend": "woollama"}
+        });
+        let s: Status = serde_json::from_value(v).unwrap();
+        assert!(s.woollama.enabled && s.woollama.reachable);
+        assert_eq!(s.woollama.active_backend.as_deref(), Some("woollama"));
+        // An older daemon omits the field entirely → defaults, no badge.
+        let s2: Status = serde_json::from_value(serde_json::json!({"serve": true})).unwrap();
+        assert!(!s2.woollama.enabled);
+        assert_eq!(s2.woollama_badge(), None);
     }
 }

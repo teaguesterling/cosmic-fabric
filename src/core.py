@@ -4,6 +4,7 @@ Used by `cosmic-fabricd`. This is the logic that will be ported to Rust for the
 Phase-2 panel/settings; keeping it small and dependency-free (stdlib only) on
 purpose. The launcher does NOT import this — it talks to the daemon over a socket.
 """
+import http.client
 import json
 import os
 import re
@@ -25,6 +26,10 @@ def load_policy():
         "surface": {"include": [], "exclude": []},
         "models": {},
         "tools": {},   # decision 5: [tools.<name>] sections (allow_domains, roots, …)
+        # woollama inference seam: when enabled, plain (non-tool, non-image) runs
+        # route their inference through the woollama router — fabric assembles the
+        # prompt, woollama infers. Off by default; fabric stays the fallback.
+        "woollama": {"enabled": False, "address": None},
     }
     try:
         import tomllib
@@ -37,6 +42,7 @@ def load_policy():
         pol["surface"] = {**pol["surface"], **(d.get("surface", {}) or {})}
         pol["models"] = d.get("models", {}) or {}
         pol["tools"] = d.get("tools", {}) or {}
+        pol["woollama"] = {**pol["woollama"], **(d.get("woollama", {}) or {})}
     except FileNotFoundError:
         pass
     except Exception as e:  # malformed policy must not break the daemon
@@ -180,6 +186,26 @@ def inst_to_options(inst):
         except (TypeError, ValueError):
             pass
     return opt
+
+
+# fabric ChatOptions (camelCase) → OpenAI chat/completions params (snake_case).
+# Only the knobs that have a standard OpenAI equivalent carry over; fabric-only
+# fields (thinking, suppressThink, raw) are dropped on the woollama path (a
+# documented slice-1 gap — they'd need ollama `extra_body` to round-trip).
+_OPENAI_OPT_MAP = {
+    "temperature": "temperature",
+    "topP": "top_p",
+    "frequencyPenalty": "frequency_penalty",
+    "presencePenalty": "presence_penalty",
+}
+
+
+def to_openai_options(inst):
+    """Resolve an instantiation's sampling knobs to OpenAI-compatible params for
+    the woollama path. Built on `inst_to_options` so policy semantics stay in one
+    place; we just rename the fabric camelCase keys that OpenAI also understands."""
+    fab = inst_to_options(inst)
+    return {dst: fab[src] for src, dst in _OPENAI_OPT_MAP.items() if src in fab}
 
 
 def pick_ctx(input_text, gen_margin=1024, tiers=(2048, 8192, 16384, 32768)):
@@ -439,6 +465,206 @@ class FabricClient:
         if err:
             raise RuntimeError(err)
         return "".join(out).strip()
+
+
+# ---------- woollama router client (OpenAI-compatible) ----------------------
+# The inference seam: when the [woollama] policy block is enabled, plain runs
+# route through the woollama router instead of fabric's /chat. fabric still
+# assembles the prompt; woollama does the inference (model "ollama/<id>"). We
+# *discover* a live woollama (never spawn it — a missing server just falls back
+# to fabric), mirroring woollama's own discovery file. See the integration plan.
+
+def _woollama_runtime_dir():
+    # Mirror woollama.binding._runtime_dir so we read the same path it writes.
+    return os.environ.get("XDG_RUNTIME_DIR") or "/tmp"
+
+
+def resolve_woollama_address():
+    """The live woollama address (loopback `host:port`), or None if no server is
+    discoverable. Precedence:
+    1) $COSMIC_FABRIC_WOOLLAMA_ADDRESS (explicit override);
+    2) the address woollama persists to $XDG_RUNTIME_DIR/woollama.addr.
+    Unlike fabric we never spawn woollama; None just means 'fall back to fabric'."""
+    env = os.environ.get("COSMIC_FABRIC_WOOLLAMA_ADDRESS")
+    if env:
+        return env.strip()
+    try:
+        with open(os.path.join(_woollama_runtime_dir(), "woollama.addr")) as f:
+            addr = f.read().strip()
+        return addr or None
+    except Exception:
+        return None
+
+
+def _tcp_transport(addr):
+    """'host:port' → ('tcp', host, port). None for an unparseable address."""
+    if not addr:
+        return None
+    host, _, port = addr.strip().partition(":")
+    try:
+        return ("tcp", host or "127.0.0.1", int(port))
+    except (TypeError, ValueError):
+        return None
+
+
+def resolve_woollama_transport(address=None):
+    """How to reach woollama, preferring its owner-only local surface:
+    1) an explicit `address` (policy [woollama].address or the env override) → TCP;
+    2) the Unix socket $XDG_RUNTIME_DIR/woollama.sock (woollama's default for
+       local clients; 0600; existence == discovery) → UDS;
+    3) the persisted loopback TCP address (woollama degrades to TCP-only when it
+       can't bind the socket).
+    Returns ('unix', path) | ('tcp', host, port) | None (no server discoverable)."""
+    explicit = address or os.environ.get("COSMIC_FABRIC_WOOLLAMA_ADDRESS")
+    if explicit:
+        return _tcp_transport(explicit)
+    sock = os.path.join(_woollama_runtime_dir(), "woollama.sock")
+    if os.path.exists(sock):
+        return ("unix", sock)
+    return _tcp_transport(resolve_woollama_address())
+
+
+class _UnixHTTPConnection(http.client.HTTPConnection):
+    """http.client speaking to an AF_UNIX stream socket — woollama's owner-only
+    local surface. Same request/response machinery as HTTPConnection; only the
+    underlying connect() differs."""
+
+    def __init__(self, sock_path, timeout=None):
+        super().__init__("localhost", timeout=timeout)
+        self._sock_path = sock_path
+
+    def connect(self):
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        if self.timeout is not None:
+            s.settimeout(self.timeout)
+        s.connect(self._sock_path)
+        self.sock = s
+
+
+def woollama_enabled(pol):
+    """True when the [woollama] policy block opts the plain run path into the
+    router. Defaults off (load_policy seeds enabled=False)."""
+    return bool((pol.get("woollama") or {}).get("enabled"))
+
+
+class WoollamaClient:
+    """Minimal OpenAI-compatible client for the woollama router. stdlib-only, to
+    match core.py's dependency-free style. `model` is woollama's namespaced id —
+    `"ollama/<id>"` for local Ollama pass-through. Prefers woollama's owner-only
+    Unix socket, falling back to the loopback TCP address (see
+    `resolve_woollama_transport`). Pass `address` (policy `[woollama].address`) to
+    force a specific TCP endpoint, or `transport` to inject one (tests)."""
+
+    def __init__(self, address=None, transport=None, log=lambda m: None):
+        self._transport = transport if transport is not None else resolve_woollama_transport(address)
+        self.log = log
+
+    @property
+    def url(self):
+        """A display string for the resolved endpoint (for logs), or None."""
+        t = self._transport
+        if not t:
+            return None
+        return f"unix:{t[1]}" if t[0] == "unix" else f"http://{t[1]}:{t[2]}"
+
+    def _connect(self, timeout):
+        """An HTTPConnection for the resolved transport. Raises if no server."""
+        t = self._transport
+        if not t:
+            raise RuntimeError("no woollama server discoverable")
+        if t[0] == "unix":
+            return _UnixHTTPConnection(t[1], timeout=timeout)
+        return http.client.HTTPConnection(t[1], t[2], timeout=timeout)
+
+    def alive(self):
+        if not self._transport:
+            return False
+        try:
+            conn = self._connect(2)
+            try:
+                conn.request("GET", "/v1/models")
+                r = conn.getresponse()
+                r.read()
+                return r.status == 200
+            finally:
+                conn.close()
+        except Exception:
+            return False
+
+    def _body(self, model, prompt, options, stream):
+        body = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "stream": stream,
+        }
+        body.update(options or {})
+        return body
+
+    def chat(self, model, prompt, options=None, timeout=600):
+        """POST /v1/chat/completions (non-streaming) → the assistant's text.
+        Raises if no server is discoverable or the request fails."""
+        conn = self._connect(timeout)
+        try:
+            conn.request("POST", "/v1/chat/completions",
+                         body=json.dumps(self._body(model, prompt, options, False)).encode(),
+                         headers={"Content-Type": "application/json"})
+            d = json.load(conn.getresponse())
+        finally:
+            conn.close()
+        return ((d.get("choices") or [{}])[0].get("message") or {}).get("content", "").strip()
+
+    def chat_stream(self, model, prompt, on_chunk=None, options=None, timeout=600):
+        """POST /v1/chat/completions with stream:true → accumulated text, calling
+        `on_chunk` with each content delta. Parses OpenAI SSE (`data: {json}` lines,
+        terminated by `data: [DONE]`)."""
+        conn = self._connect(timeout)
+        out = []
+        try:
+            conn.request("POST", "/v1/chat/completions",
+                         body=json.dumps(self._body(model, prompt, options, True)).encode(),
+                         headers={"Content-Type": "application/json"})
+            for raw in conn.getresponse():  # HTTPResponse iterates by line
+                line = raw.decode("utf-8", "replace").strip()
+                if not line or not line.startswith("data:"):
+                    continue
+                line = line[5:].strip()
+                if line == "[DONE]":
+                    break
+                try:
+                    ev = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                delta = ((ev.get("choices") or [{}])[0].get("delta") or {}).get("content")
+                if delta:
+                    out.append(delta)
+                    if on_chunk:
+                        on_chunk(delta)
+        finally:
+            conn.close()
+        return "".join(out).strip()
+
+
+def woollama_model(model, vendor):
+    """cosmic-fabric `{model, vendor}` → woollama's namespaced model id. Ollama
+    is the local pass-through prefix; other vendors map by lowercased name (the
+    woollama inferencer registry: anthropic/openai/groq/…)."""
+    return f"{(vendor or 'ollama').lower()}/{model}"
+
+
+def woollama_status(pol):
+    """Observability snapshot of the inference seam, for the `status` op / panel:
+    whether routing is enabled, whether a server is reachable, the resolved
+    endpoint (unix:… or http://…), and which backend a plain eligible run uses
+    *right now* — woollama only when both enabled and reachable, else fabric."""
+    enabled = woollama_enabled(pol)
+    client = WoollamaClient(address=(pol.get("woollama") or {}).get("address"))
+    reachable = client.alive()
+    return {
+        "enabled": enabled,
+        "reachable": reachable,
+        "endpoint": client.url,
+        "active_backend": "woollama" if (enabled and reachable) else "fabric",
+    }
 
 
 # ---------- web source ingestion (URL → text) -------------------------------
