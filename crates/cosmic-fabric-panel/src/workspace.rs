@@ -16,7 +16,7 @@ use cosmic::{
     app,
     iced::{widget::Column, Alignment, Length},
     theme,
-    widget::{button, container, divider, dropdown, scrollable, text, text_editor, text_input},
+    widget::{button, combo_box, container, divider, dropdown, icon, scrollable, text, text_editor, text_input},
     Element,
 };
 
@@ -163,6 +163,14 @@ struct DestSpec {
     note: Option<&'static str>,
 }
 
+/// Which consolidated popover is open: Copy (pick an artifact) or Send (pick a
+/// destination). Replaces the old per-artifact menu key.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MenuKind {
+    Copy,
+    Send,
+}
+
 /// The destination registry shown in every send-to menu.
 fn destinations() -> [DestSpec; 5] {
     [
@@ -188,6 +196,7 @@ pub struct Workspace {
     all_patterns: Vec<String>,   // every pattern fabric has (unfiltered)
     patterns: Vec<String>,       // the active/curated set (run dropdown)
     pattern_labels: Vec<String>, // pretty labels for the active set
+    pattern_state: combo_box::State<String>, // searchable picker state (mirrors pattern_labels)
     selected_idx: Option<usize>,
     mode: WorkMode,
     library_query: String,
@@ -197,7 +206,8 @@ pub struct Workspace {
     model_selected: Option<String>, // model whose editor is open
     am_name: String,                // new-model name
     am_vendor: Option<usize>,       // new-model vendor (index into catalog keys)
-    am_model: Option<usize>,        // new-model model (index into that vendor's list)
+    am_model: Option<String>,       // new-model model name (from the vendor's catalog)
+    am_model_state: combo_box::State<String>, // searchable model picker (rebuilt per vendor)
     cat_draft: String,              // selected model's categories (comma-edited)
     av_name: String,                // new-variant name (add row is name-only)
     /// In-progress text for each variant's inline knobs, keyed by (model, vname).
@@ -217,6 +227,8 @@ pub struct Workspace {
     edit_gen: u64,
 
     response: Option<String>,
+    response_collapsed: bool,
+    ran: bool, // a run has been started → reveal the Response card
     result_meta: Option<String>,
     running: bool,
     pending: Option<(u64, String, String)>, // (run id, pattern, input) → stream sub
@@ -224,7 +236,7 @@ pub struct Workspace {
 
     error: Option<String>,
     status_msg: Option<String>, // transient (e.g. "saved to …")
-    open_menu: Option<Artifact>, // which send-to menu is open
+    open_menu: Option<MenuKind>, // which consolidated popover is open
 }
 
 #[derive(Debug, Clone)]
@@ -242,13 +254,14 @@ pub enum Message {
     ImagePath(String),
     ImageFromClipboard,
     RunImageDone(Result<RunResult, String>),
-    PickPattern(usize),
+    PickPattern(String),
     AssembleDebounced(u64),
     AssembleDone(u64, Result<String, String>),
     TogglePrompt,
+    ToggleResponse,
     Run,
     RunEvent(daemon::RunEvent),
-    ToggleMenu(Artifact),
+    ToggleMenu(MenuKind),
     CloseMenu,
     Route(Artifact, Dest),
     SetMode(WorkMode),
@@ -260,7 +273,7 @@ pub enum Message {
     // --- Models editor ---
     AmName(String),
     AmVendor(usize),
-    AmModel(usize),
+    AmModel(String),
     AddModel,
     SelectModel(String),
     DeleteModel(String),
@@ -335,6 +348,7 @@ impl cosmic::Application for Workspace {
             all_patterns: Vec::new(),
             patterns: Vec::new(),
             pattern_labels: Vec::new(),
+            pattern_state: combo_box::State::new(Vec::new()),
             selected_idx: None,
             mode: WorkMode::Run,
             library_query: String::new(),
@@ -344,6 +358,7 @@ impl cosmic::Application for Workspace {
             am_name: String::new(),
             am_vendor: None,
             am_model: None,
+            am_model_state: combo_box::State::new(Vec::new()),
             cat_draft: String::new(),
             av_name: String::new(),
             variant_edits: BTreeMap::new(),
@@ -358,6 +373,8 @@ impl cosmic::Application for Workspace {
             asm_gen: 0,
             edit_gen: 0,
             response: None,
+            response_collapsed: false,
+            ran: false,
             result_meta: None,
             running: false,
             pending: None,
@@ -469,8 +486,10 @@ impl cosmic::Application for Workspace {
                     Err(e) => self.error = Some(format!("read failed: {e}")),
                 }
             }
-            Message::PickPattern(idx) => {
-                self.selected_idx = Some(idx);
+            Message::PickPattern(label) => {
+                // The combobox yields the chosen pretty label; map it back to its
+                // index in the active set.
+                self.selected_idx = self.pattern_labels.iter().position(|l| *l == label);
                 return self.trigger_assemble();
             }
             Message::AssembleDebounced(g) => {
@@ -487,6 +506,7 @@ impl cosmic::Application for Workspace {
                 }
             }
             Message::TogglePrompt => self.prompt_collapsed = !self.prompt_collapsed,
+            Message::ToggleResponse => self.response_collapsed = !self.response_collapsed,
 
             Message::Run => {
                 if self.origin == Origin::Image {
@@ -498,6 +518,7 @@ impl cosmic::Application for Workspace {
                     let question = self.source.text();
                     let pattern = self.selected_idx.map(|i| self.patterns[i].clone());
                     self.response = Some(String::new());
+                    self.on_run_started();
                     self.result_meta = None;
                     self.running = true;
                     self.error = None;
@@ -521,6 +542,7 @@ impl cosmic::Application for Workspace {
                 self.run_seq += 1;
                 self.pending = Some((self.run_seq, pattern, input));
                 self.response = Some(String::new());
+                self.on_run_started();
                 self.result_meta = None;
                 self.running = true;
                 self.error = None;
@@ -641,18 +663,22 @@ impl cosmic::Application for Workspace {
             Message::AmVendor(i) => {
                 self.am_vendor = Some(i);
                 self.am_model = None;
+                // Rebuild the searchable model picker for the chosen vendor.
+                let vendors: Vec<String> = self.catalog.keys().cloned().collect();
+                let models = vendors
+                    .get(i)
+                    .and_then(|v| self.catalog.get(v))
+                    .cloned()
+                    .unwrap_or_default();
+                self.am_model_state = combo_box::State::new(models);
             }
-            Message::AmModel(i) => self.am_model = Some(i),
+            Message::AmModel(name) => self.am_model = Some(name),
             Message::AddModel => {
                 let name = self.am_name.trim().to_string();
                 let vendors: Vec<String> = self.catalog.keys().cloned().collect();
                 if !name.is_empty() && !self.policy.models.contains_key(&name) {
                     if let Some(vendor) = self.am_vendor.and_then(|i| vendors.get(i)).cloned() {
-                        let model = self
-                            .am_model
-                            .and_then(|mi| self.catalog.get(&vendor).and_then(|m| m.get(mi)))
-                            .cloned()
-                            .unwrap_or_default();
+                        let model = self.am_model.clone().unwrap_or_default();
                         if !model.is_empty() {
                             self.policy.models.insert(
                                 name.clone(),
@@ -662,6 +688,7 @@ impl cosmic::Application for Workspace {
                             self.am_name.clear();
                             self.am_vendor = None;
                             self.am_model = None;
+                            self.am_model_state = combo_box::State::new(Vec::new());
                             self.cat_draft.clear();
                             self.model_selected = Some(name);
                         }
@@ -786,6 +813,10 @@ impl cosmic::Application for Workspace {
                 self.transform_note = None;
                 self.error = None;
                 self.status_msg = None;
+                // back to the pre-run layout: Prompt open, Response hidden
+                self.ran = false;
+                self.prompt_collapsed = false;
+                self.response_collapsed = false;
             }
             Message::OpenSettings => {
                 if let Ok(exe) = std::env::current_exe() {
@@ -839,6 +870,11 @@ impl cosmic::Application for Workspace {
             ]
             .spacing(2),
         );
+        // settings gear, top-right (replaces the old footer "Settings…")
+        header = header.push(
+            button::icon(icon::from_name("emblem-system-symbolic"))
+                .on_press(Message::OpenSettings),
+        );
         col = col.push(header);
         col = col.push(divider::horizontal::default());
 
@@ -854,11 +890,20 @@ impl cosmic::Application for Workspace {
                 col = col.push(self.source_section(&s));
 
                 // ---- pattern + run ----
-                let mut runrow = cosmic::iced::widget::row![dropdown(
-                    &self.pattern_labels,
-                    self.selected_idx,
-                    Message::PickPattern,
-                )]
+                // The pattern picker drives the whole source→assemble→run flow,
+                // so it's a labelled, searchable combobox: type to filter the
+                // active set (the placeholder names the step when empty).
+                let selected_label = self.selected_idx.and_then(|i| self.pattern_labels.get(i));
+                let mut runrow = cosmic::iced::widget::row![
+                    text::body("Pattern"),
+                    combo_box(
+                        &self.pattern_state,
+                        "Choose a pattern\u{2026}",
+                        selected_label,
+                        Message::PickPattern,
+                    )
+                    .width(Length::Fixed(280.0)),
+                ]
                 .spacing(s.space_s)
                 .align_y(Alignment::Center);
                 let run_btn = button::suggested(if self.running { "Running…" } else { "Run" });
@@ -870,20 +915,12 @@ impl cosmic::Application for Workspace {
                 col = col.push(runrow);
 
                 col = col.push(self.prompt_card(&s));
-                col = col.push(self.response_card(&s));
-
-                col = col.push(divider::horizontal::default());
-                let mut foot = cosmic::iced::widget::row![
-                    self.sendto(Artifact::Conversation, "Copy conversation", true),
-                    button::text("Clear").on_press(Message::Clear),
-                ]
-                .spacing(s.space_xs)
-                .align_y(Alignment::Center);
-                foot = foot.push(cosmic::widget::Space::new().width(Length::Fill));
-                foot = foot.push(button::text("Chat…").on_press(Message::OpenSession));
-                foot = foot.push(button::text("Refresh").on_press(Message::Refresh));
-                foot = foot.push(button::text("Settings…").on_press(Message::OpenSettings));
-                col = col.push(foot);
+                // Response card stays hidden until the first Run.
+                if self.ran {
+                    col = col.push(self.response_card(&s));
+                }
+                // Copy ▾ (prompt card) + Send ▾ (response card) replace the old
+                // footer of per-artifact Copy buttons, Chat, and Refresh.
             }
         }
 
@@ -927,9 +964,19 @@ impl Workspace {
         format!("serve {serve}  \u{00b7}  {model}{gpu}{wool}")
     }
 
+    /// On Run: reveal + expand the Response card and collapse the (now
+    /// secondary) Prompt — focus shifts from "what am I sending" to "the answer".
+    fn on_run_started(&mut self) {
+        self.ran = true;
+        self.prompt_collapsed = true;
+        self.response_collapsed = false;
+    }
+
     fn recompute_active(&mut self) {
         self.patterns = self.policy.active_patterns(&self.all_patterns);
         self.pattern_labels = self.patterns.iter().map(|n| pretty(n)).collect();
+        // Rebuild the searchable picker's options to match the active set.
+        self.pattern_state = combo_box::State::new(self.pattern_labels.clone());
         if let Some(i) = self.selected_idx {
             if i >= self.patterns.len() {
                 self.selected_idx = None;
@@ -1081,15 +1128,19 @@ impl Workspace {
 
         // ---- add a model ----
         let vendors: Vec<String> = self.catalog.keys().cloned().collect();
-        let cur_vendor = self.am_vendor.and_then(|i| vendors.get(i)).cloned();
         let vendor_dd = dropdown(vendors, self.am_vendor, Message::AmVendor);
-        let models_for_vendor: Vec<String> =
-            cur_vendor.as_ref().and_then(|v| self.catalog.get(v)).cloned().unwrap_or_default();
-        let model_dd = dropdown(models_for_vendor, self.am_model, Message::AmModel);
+        // Searchable model picker for the chosen vendor's catalog (often long).
+        let model_cb = combo_box(
+            &self.am_model_state,
+            "model\u{2026}",
+            self.am_model.as_ref(),
+            Message::AmModel,
+        )
+        .width(Length::Fixed(200.0));
         let add_row = cosmic::iced::widget::row![
             text_input("new model name", &self.am_name).on_input(Message::AmName).width(Length::Fixed(150.0)),
             vendor_dd,
-            model_dd,
+            model_cb,
             button::standard("Add").on_press(Message::AddModel),
         ]
         .spacing(s.space_xs)
@@ -1289,7 +1340,13 @@ impl Workspace {
         match self.origin {
             Origin::Clipboard => {
                 col = col.push(
-                    button::text("Load from clipboard").on_press(Message::LoadClipboard),
+                    cosmic::iced::widget::row![
+                        button::icon(icon::from_name("edit-paste-symbolic"))
+                            .on_press(Message::LoadClipboard),
+                        text::caption("Load from clipboard"),
+                    ]
+                    .spacing(s.space_xxs)
+                    .align_y(Alignment::Center),
                 );
             }
             Origin::Url => {
@@ -1349,7 +1406,14 @@ impl Workspace {
             Some(n) => format!("{chars} chars  \u{00b7}  {n}"),
             None => format!("{chars} chars"),
         };
-        col = col.push(text::caption(note));
+        col = col.push(
+            cosmic::iced::widget::row![
+                text::caption(note),
+                cosmic::widget::Space::new().width(Length::Fill),
+                button::icon(icon::from_name("edit-clear-all-symbolic")).on_press(Message::Clear),
+            ]
+            .align_y(Alignment::Center),
+        );
         col.into()
     }
 
@@ -1378,7 +1442,9 @@ impl Workspace {
             button::text(format!("{arrow}  {title}")).on_press(Message::TogglePrompt),
             cosmic::widget::Space::new().width(Length::Fill),
             text::caption(format!("assembled \u{00b7} {chars} chars")),
+            self.copy_control(),
         ]
+        .spacing(s.space_xs)
         .align_y(Alignment::Center);
 
         let mut card = Column::new().spacing(s.space_xxs).push(head);
@@ -1390,13 +1456,6 @@ impl Workspace {
                     .height(Length::Fixed(40.0)),
             };
             card = card.push(body);
-            card = card.push(
-                cosmic::iced::widget::row![
-                    cosmic::widget::Space::new().width(Length::Fill),
-                    self.sendto(Artifact::Prompt, "Copy prompt", self.prompt.is_some()),
-                ]
-                .align_y(Alignment::Center),
-            );
         }
         container(card)
             .padding(s.space_xs)
@@ -1410,33 +1469,28 @@ impl Workspace {
         } else {
             self.result_meta.clone().unwrap_or_default()
         };
+        let arrow = if self.response_collapsed { "\u{25b8}" } else { "\u{25be}" };
         let head = cosmic::iced::widget::row![
-            text::heading("Response"),
+            button::text(format!("{arrow}  Response")).on_press(Message::ToggleResponse),
             cosmic::widget::Space::new().width(Length::Fill),
             text::caption(meta),
+            self.send_control(),
         ]
+        .spacing(s.space_xs)
         .align_y(Alignment::Center);
 
-        let body = match &self.response {
-            Some(r) if !r.is_empty() => {
-                scrollable(text::body(r.clone())).height(Length::Fixed(180.0))
-            }
-            _ => scrollable(text::body("Press Run to generate a response."))
-                .height(Length::Fixed(40.0)),
-        };
-        let has = self.response.as_deref().map(|r| !r.is_empty()).unwrap_or(false);
-        let chat: Element<_> = if has {
-            button::text("\u{21aa} Chat").on_press(Message::ContinueInChat).into()
-        } else {
-            button::text("\u{21aa} Chat").into()
-        };
-        let actions = cosmic::iced::widget::row![cosmic::widget::Space::new().width(Length::Fill)]
-            .push(chat)
-            .push(self.sendto(Artifact::Response, "Copy response", has))
-            .spacing(s.space_xs)
-            .align_y(Alignment::Center);
-
-        container(Column::new().spacing(s.space_xxs).push(head).push(body).push(actions))
+        let mut card = Column::new().spacing(s.space_xxs).push(head);
+        if !self.response_collapsed {
+            let body = match &self.response {
+                Some(r) if !r.is_empty() => {
+                    scrollable(text::body(r.clone())).height(Length::Fixed(180.0))
+                }
+                _ => scrollable(text::body("Press Run to generate a response."))
+                    .height(Length::Fixed(40.0)),
+            };
+            card = card.push(body);
+        }
+        container(card)
             .padding(s.space_xs)
             .class(theme::Container::Card)
             .into()
@@ -1459,55 +1513,92 @@ impl Workspace {
         }
     }
 
-    /// A send-to control: a default **Copy** button + a `▾` that opens the
-    /// destination registry as a popover menu.
-    fn sendto(&self, a: Artifact, default_label: &str, enabled: bool) -> Element<'_, Message> {
+    fn has_response(&self) -> bool {
+        self.response.as_deref().map(|r| !r.is_empty()).unwrap_or(false)
+    }
+
+    /// Consolidated **Copy ▾**: primary copies the most relevant artifact
+    /// (Response after a run, else Prompt); the ▾ picks Prompt / Response /
+    /// Conversation explicitly. Lives on the Prompt card header.
+    fn copy_control(&self) -> Element<'_, Message> {
+        let default_art = if self.ran { Artifact::Response } else { Artifact::Prompt };
+        let can_default = match default_art {
+            Artifact::Prompt => self.prompt.is_some(),
+            _ => self.has_response(),
+        };
         let primary = {
-            let b = button::standard(default_label.to_string());
-            if enabled {
-                b.on_press(Message::Route(a, Dest::Copy))
-            } else {
-                b
-            }
+            let b = button::standard("Copy");
+            if can_default { b.on_press(Message::Route(default_art, Dest::Copy)) } else { b }
         };
-        let caret = {
-            let b = button::text("\u{25be}");
-            if enabled {
-                b.on_press(Message::ToggleMenu(a))
-            } else {
-                b
-            }
-        };
+        let caret = button::text("\u{25be}").on_press(Message::ToggleMenu(MenuKind::Copy));
         let anchor = cosmic::iced::widget::row![primary, caret]
             .spacing(2)
             .align_y(Alignment::Center);
-
         let mut pop = cosmic::widget::popover(anchor);
-        if self.open_menu == Some(a) {
+        if self.open_menu == Some(MenuKind::Copy) {
             pop = pop
-                .popup(self.dest_menu(a))
+                .popup(self.copy_menu())
                 .on_close(Message::CloseMenu)
                 .position(cosmic::widget::popover::Position::Bottom);
         }
         pop.into()
     }
 
-    fn dest_menu(&self, a: Artifact) -> Element<'_, Message> {
+    fn copy_menu(&self) -> Element<'_, Message> {
+        let sp = theme::active().cosmic().spacing;
+        let items = [
+            ("Copy Prompt", Artifact::Prompt, self.prompt.is_some()),
+            ("Copy Response", Artifact::Response, self.has_response()),
+            ("Copy Conversation", Artifact::Conversation, self.ran),
+        ];
+        let mut menu = Column::new().spacing(2).padding(sp.space_xxs);
+        for (label, art, enabled) in items {
+            let b = button::text(label).width(Length::Fixed(200.0));
+            let b = if enabled { b.on_press(Message::Route(art, Dest::Copy)) } else { b };
+            menu = menu.push(b);
+        }
+        container(menu).class(theme::Container::Card).into()
+    }
+
+    /// Consolidated **Send ▾**: the destination registry (minus Copy, which has
+    /// its own control) plus "Continue in Chat", routing the Conversation. Lives
+    /// on the Response card header.
+    fn send_control(&self) -> Element<'_, Message> {
+        let anchor = button::standard("Send \u{25be}").on_press(Message::ToggleMenu(MenuKind::Send));
+        let mut pop = cosmic::widget::popover(anchor);
+        if self.open_menu == Some(MenuKind::Send) {
+            pop = pop
+                .popup(self.send_menu())
+                .on_close(Message::CloseMenu)
+                .position(cosmic::widget::popover::Position::Bottom);
+        }
+        pop.into()
+    }
+
+    fn send_menu(&self) -> Element<'_, Message> {
         let sp = theme::active().cosmic().spacing;
         let mut menu = Column::new().spacing(2).padding(sp.space_xxs);
         for d in destinations() {
+            if d.dest == Dest::Copy {
+                continue; // Copy is its own control now
+            }
             let label = match d.note {
                 Some(n) => format!("{}   ({n})", d.label),
                 None => d.label.to_string(),
             };
             let b = button::text(label).width(Length::Fixed(220.0));
             let b = if d.enabled {
-                b.on_press(Message::Route(a, d.dest))
+                b.on_press(Message::Route(Artifact::Conversation, d.dest))
             } else {
                 b
             };
             menu = menu.push(b);
         }
+        menu = menu.push(
+            button::text("Continue in Chat")
+                .width(Length::Fixed(220.0))
+                .on_press(Message::ContinueInChat),
+        );
         container(menu).class(theme::Container::Card).into()
     }
 
