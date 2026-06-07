@@ -215,7 +215,8 @@ def handle(req):
                 "loaded": core.loaded_models(pol["ollama"]["url"]),
                 "vram": core.gpu_vram(),
                 "default_model": dinst.get("model"),
-                "default_vendor": dinst.get("vendor")}
+                "default_vendor": dinst.get("vendor"),
+                "woollama": core.woollama_status(pol)}
     if op == "run":
         pat = req.get("pattern")
         image = req.get("image")

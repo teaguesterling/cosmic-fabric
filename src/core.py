@@ -651,6 +651,22 @@ def woollama_model(model, vendor):
     return f"{(vendor or 'ollama').lower()}/{model}"
 
 
+def woollama_status(pol):
+    """Observability snapshot of the inference seam, for the `status` op / panel:
+    whether routing is enabled, whether a server is reachable, the resolved
+    endpoint (unix:… or http://…), and which backend a plain eligible run uses
+    *right now* — woollama only when both enabled and reachable, else fabric."""
+    enabled = woollama_enabled(pol)
+    client = WoollamaClient(address=(pol.get("woollama") or {}).get("address"))
+    reachable = client.alive()
+    return {
+        "enabled": enabled,
+        "reachable": reachable,
+        "endpoint": client.url,
+        "active_backend": "woollama" if (enabled and reachable) else "fabric",
+    }
+
+
 # ---------- web source ingestion (URL → text) -------------------------------
 _TAG_RE = re.compile(r"<[^>]+>")
 _DROP_RE = re.compile(r"<(script|style|head|noscript)[^>]*>.*?</\1>", re.S | re.I)

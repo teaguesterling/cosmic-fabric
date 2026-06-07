@@ -576,6 +576,38 @@ class WoollamaSeam(unittest.TestCase):
             with patch.dict(_os.environ, self._empty_runtime_env(td), clear=True):
                 self.assertIsNone(core.resolve_woollama_transport())
 
+    def test_status_disabled_no_server(self):
+        import os as _os, tempfile
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as td:
+            with patch.dict(_os.environ, self._empty_runtime_env(td), clear=True):
+                self.assertEqual(core.woollama_status({}),
+                                 {"enabled": False, "reachable": False,
+                                  "endpoint": None, "active_backend": "fabric"})
+
+    def test_status_enabled_but_unreachable_is_fabric(self):
+        import os as _os, tempfile
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as td:  # no server discoverable
+            with patch.dict(_os.environ, self._empty_runtime_env(td), clear=True):
+                s = core.woollama_status({"woollama": {"enabled": True}})
+                self.assertTrue(s["enabled"])
+                self.assertFalse(s["reachable"])
+                self.assertEqual(s["active_backend"], "fabric")  # reachability gates it
+
+    def test_status_enabled_and_reachable_is_woollama(self):
+        import os as _os, tempfile
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as td:
+            with open(_os.path.join(td, "woollama.addr"), "w") as f:
+                f.write("127.0.0.1:8888\n")
+            with patch.dict(_os.environ, self._empty_runtime_env(td), clear=True), \
+                 patch.object(core.WoollamaClient, "alive", lambda self: True):
+                s = core.woollama_status({"woollama": {"enabled": True}})
+                self.assertTrue(s["reachable"])
+                self.assertEqual(s["endpoint"], "http://127.0.0.1:8888")
+                self.assertEqual(s["active_backend"], "woollama")
+
     def test_chat_parses_openai_response(self):
         body = json.dumps({"choices": [{"message": {"role": "assistant",
                                                     "content": "  hello there  "}}]})
