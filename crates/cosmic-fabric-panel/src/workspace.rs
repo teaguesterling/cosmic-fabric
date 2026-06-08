@@ -411,7 +411,7 @@ impl cosmic::Application for Workspace {
     }
 
     fn subscription(&self) -> cosmic::iced::Subscription<Message> {
-        match &self.pending {
+        let run = match &self.pending {
             Some(p) => cosmic::iced::Subscription::run_with(
                 p.clone(),
                 |(_, pat, input, model): &(u64, String, String, Option<String>)| {
@@ -420,7 +420,12 @@ impl cosmic::Application for Workspace {
                 },
             ),
             None => cosmic::iced::Subscription::none(),
-        }
+        };
+        // Ctrl+Enter triggers the run (the source editor takes plain Enter for
+        // newlines). The Run handler guards mode/running, so a global listener is
+        // fine. `listen_with` needs a plain fn pointer (no captured state).
+        let keys = cosmic::iced::event::listen_with(ctrl_enter_run);
+        cosmic::iced::Subscription::batch([run, keys])
     }
 
     fn update(&mut self, message: Message) -> app::Task<Message> {
@@ -549,6 +554,11 @@ impl cosmic::Application for Workspace {
             }
 
             Message::Run => {
+                // Ctrl+Enter fires globally; ignore unless we're on the Run tab
+                // and idle.
+                if self.mode != WorkMode::Run || self.running {
+                    return app::Task::none();
+                }
                 if self.origin == Origin::Image {
                     let path = self.image_path.trim().to_string();
                     if path.is_empty() {
@@ -946,7 +956,7 @@ impl cosmic::Application for Workspace {
                         selected_label,
                         Message::PickPattern,
                     )
-                    .width(Length::Fixed(280.0)),
+                    .width(Length::Fixed(240.0)),
                 ]
                 .spacing(s.space_s)
                 .align_y(Alignment::Center);
@@ -961,16 +971,22 @@ impl cosmic::Application for Workspace {
                             self.run_model.as_ref(),
                             Message::PickRunModel,
                         )
-                        .width(Length::Fixed(220.0)),
+                        .width(Length::Fixed(180.0)),
                     );
                 }
-                let run_btn = button::suggested(if self.running { "Running…" } else { "Run" });
-                runrow = runrow.push(if self.running {
-                    run_btn
-                } else {
-                    run_btn.on_press(Message::Run)
-                });
                 col = col.push(runrow);
+                // Run on its own row so it's always visible — the picker row gets
+                // wide with the Model combobox and would otherwise clip the button.
+                let run_btn = button::suggested(if self.running { "Running\u{2026}" } else { "Run" });
+                let run_btn = if self.running { run_btn } else { run_btn.on_press(Message::Run) };
+                col = col.push(
+                    cosmic::iced::widget::row![
+                        text::caption("Ctrl+Enter to run"),
+                        cosmic::widget::Space::new().width(Length::Fill),
+                        run_btn,
+                    ]
+                    .align_y(Alignment::Center),
+                );
 
                 col = col.push(self.prompt_card(&s));
                 // Response card stays hidden until the first Run.
@@ -1046,7 +1062,7 @@ impl Workspace {
         if self.origin == Origin::Image {
             h += 28.0; // vision caption
         }
-        h += 44.0; // pattern + run row
+        h += 44.0 + 44.0; // pattern/model row + the Run row
         h += 44.0 + if self.prompt_collapsed { 0.0 } else { 166.0 }; // prompt card
         if self.ran {
             h += 44.0 + if self.response_collapsed { 0.0 } else { 196.0 }; // response card
@@ -1767,6 +1783,27 @@ fn save_to_file(text: &str, pattern: Option<&str>) -> Result<String, String> {
     let path = format!("{home}/{pat}-{ts}.md");
     std::fs::write(&path, text).map_err(|e| e.to_string())?;
     Ok(path)
+}
+
+/// Ctrl+Enter → trigger a run. A plain fn (no state) for `event::listen_with`;
+/// the `Run` handler guards mode/running.
+fn ctrl_enter_run(
+    event: cosmic::iced::Event,
+    _status: cosmic::iced::event::Status,
+    _id: cosmic::iced::window::Id,
+) -> Option<Message> {
+    use cosmic::iced::keyboard::{key::Named, Event as Kbd, Key};
+    if let cosmic::iced::Event::Keyboard(Kbd::KeyPressed {
+        key: Key::Named(Named::Enter),
+        modifiers,
+        ..
+    }) = event
+    {
+        if modifiers.control() {
+            return Some(Message::Run);
+        }
+    }
+    None
 }
 
 fn woollama_models_task() -> app::Task<Message> {
