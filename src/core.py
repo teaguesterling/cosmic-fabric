@@ -654,6 +654,36 @@ class WoollamaClient:
             conn.close()
         return "".join(out).strip()
 
+    def respond(self, model, input_text, conversation_id=None, timeout=600):
+        """POST /v1/responses (stateful) → (assistant_text, conversation_id). For
+        the state-owning backends (claude-resume / managed-agents). Non-streaming —
+        woollama defers stateful streaming. Pass the prior conversation_id to
+        continue a session; None starts one (store:true)."""
+        body = {"model": model, "input": input_text, "store": True}
+        if conversation_id:
+            body["conversation"] = conversation_id
+        conn = self._connect(timeout)
+        try:
+            conn.request("POST", "/v1/responses",
+                         body=json.dumps(body).encode(),
+                         headers={"Content-Type": "application/json"})
+            d = json.load(conn.getresponse())
+        finally:
+            conn.close()
+        # The conversation handle comes back as {"id": "conv_…"} (or a bare string).
+        c = d.get("conversation")
+        conv = c.get("id") if isinstance(c, dict) else c
+        # Assistant text: first text part in the Responses `output` items.
+        text = ""
+        for item in (d.get("output") or []):
+            for part in (item.get("content") or []):
+                if isinstance(part, dict) and part.get("text"):
+                    text = part["text"]
+                    break
+            if text:
+                break
+        return text.strip(), conv
+
 
 def woollama_model(model, vendor):
     """cosmic-fabric `{model, vendor}` → woollama's namespaced model id. Ollama
