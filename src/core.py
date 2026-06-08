@@ -591,6 +591,17 @@ class WoollamaClient:
         except Exception:
             return False
 
+    def list_models(self, timeout=5):
+        """GET /v1/models → the router's addressable model ids (e.g.
+        'ollama/qwen3:14b', 'woollama/<recipe>'). Raises if no server."""
+        conn = self._connect(timeout)
+        try:
+            conn.request("GET", "/v1/models")
+            d = json.load(conn.getresponse())
+        finally:
+            conn.close()
+        return [m["id"] for m in d.get("data", []) if m.get("id")]
+
     def _body(self, model, prompt, options, stream):
         body = {
             "model": model,

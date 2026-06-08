@@ -181,6 +181,15 @@ def handle(req):
         return {"patterns": _pat_cache}
     if op == "models":
         return {"models": FAB.list_models(), "vendors": FAB.model_catalog()}
+    if op == "woollama_models":
+        # The router's addressable models, for the Run-tab per-run model picker.
+        pol = core.load_policy()
+        wool = core.WoollamaClient(address=(pol.get("woollama") or {}).get("address"), log=log)
+        try:
+            return {"models": wool.list_models()}
+        except Exception as e:
+            log(f"woollama_models error: {e}")
+            return {"models": [], "error": str(e)}
     if op == "assemble":
         pat = req.get("pattern")
         if not pat:
