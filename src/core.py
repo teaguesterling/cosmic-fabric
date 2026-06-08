@@ -673,16 +673,23 @@ class WoollamaClient:
         # The conversation handle comes back as {"id": "conv_…"} (or a bare string).
         c = d.get("conversation")
         conv = c.get("id") if isinstance(c, dict) else c
-        # Assistant text: first text part in the Responses `output` items.
-        text = ""
+        # Assistant text: prefer the message's `output_text` parts so we don't
+        # surface a `reasoning` item; fall back to any text part. (status ==
+        # "requires_action" — the managed-agents interactive path — yields no
+        # output text here; that path isn't wired yet.)
+        text, fallback = "", ""
         for item in (d.get("output") or []):
             for part in (item.get("content") or []):
-                if isinstance(part, dict) and part.get("text"):
-                    text = part["text"]
+                t = part.get("text") if isinstance(part, dict) else None
+                if not t:
+                    continue
+                if part.get("type") == "output_text":
+                    text = t
                     break
+                fallback = fallback or t
             if text:
                 break
-        return text.strip(), conv
+        return (text or fallback).strip(), conv
 
 
 def woollama_model(model, vendor):

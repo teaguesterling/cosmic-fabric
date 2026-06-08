@@ -302,9 +302,7 @@ pub enum Message {
     Retry,
     Clear,
     OpenSettings,
-    OpenSession,
     ContinueInChat,
-    Refresh,
     DismissError,
 }
 
@@ -427,7 +425,14 @@ impl cosmic::Application for Workspace {
 
     fn update(&mut self, message: Message) -> app::Task<Message> {
         match message {
-            Message::StatusDone(Ok(s)) => self.status = Some(s),
+            Message::StatusDone(Ok(s)) => {
+                // If woollama routing is off, the Run-row model picker is hidden —
+                // drop any stale override so it can't silently apply.
+                if !s.woollama.enabled {
+                    self.run_model = None;
+                }
+                self.status = Some(s);
+            }
             Message::StatusDone(Err(e)) => self.error = Some(e),
             Message::PatternsDone(Ok(p)) => {
                 self.all_patterns = p;
@@ -860,16 +865,12 @@ impl cosmic::Application for Workspace {
                 self.ran = false;
                 self.prompt_collapsed = false;
                 self.response_collapsed = false;
+                self.run_model = None; // drop any per-run model override
                 return self.fit_window();
             }
             Message::OpenSettings => {
                 if let Ok(exe) = std::env::current_exe() {
                     let _ = std::process::Command::new(exe).arg("settings").spawn();
-                }
-            }
-            Message::OpenSession => {
-                if let Ok(exe) = std::env::current_exe() {
-                    let _ = std::process::Command::new(exe).arg("session").spawn();
                 }
             }
             Message::ContinueInChat => {
@@ -880,7 +881,6 @@ impl cosmic::Application for Workspace {
                     }
                 }
             }
-            Message::Refresh => return cosmic::Task::batch([status_task(), patterns_task()]),
             Message::DismissError => self.error = None,
         }
         app::Task::none()
@@ -1578,8 +1578,14 @@ impl Workspace {
                 Some(r) if !r.is_empty() => {
                     scrollable(text::body(r.clone())).height(Length::Fixed(180.0))
                 }
-                _ => scrollable(text::body("Press Run to generate a response."))
-                    .height(Length::Fixed(40.0)),
+                _ => {
+                    let placeholder = if self.running {
+                        "Generating\u{2026}"
+                    } else {
+                        "Press Run to generate a response."
+                    };
+                    scrollable(text::body(placeholder)).height(Length::Fixed(40.0))
+                }
             };
             card = card.push(body);
         }
