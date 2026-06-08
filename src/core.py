@@ -591,6 +591,17 @@ class WoollamaClient:
         except Exception:
             return False
 
+    def list_models(self, timeout=5):
+        """GET /v1/models → the router's addressable model ids (e.g.
+        'ollama/qwen3:14b', 'woollama/<recipe>'). Raises if no server."""
+        conn = self._connect(timeout)
+        try:
+            conn.request("GET", "/v1/models")
+            d = json.load(conn.getresponse())
+        finally:
+            conn.close()
+        return [m["id"] for m in d.get("data", []) if m.get("id")]
+
     def _body(self, model, prompt, options, stream):
         body = {
             "model": model,
@@ -642,6 +653,43 @@ class WoollamaClient:
         finally:
             conn.close()
         return "".join(out).strip()
+
+    def respond(self, model, input_text, conversation_id=None, timeout=600):
+        """POST /v1/responses (stateful) → (assistant_text, conversation_id). For
+        the state-owning backends (claude-resume / managed-agents). Non-streaming —
+        woollama defers stateful streaming. Pass the prior conversation_id to
+        continue a session; None starts one (store:true)."""
+        body = {"model": model, "input": input_text, "store": True}
+        if conversation_id:
+            body["conversation"] = conversation_id
+        conn = self._connect(timeout)
+        try:
+            conn.request("POST", "/v1/responses",
+                         body=json.dumps(body).encode(),
+                         headers={"Content-Type": "application/json"})
+            d = json.load(conn.getresponse())
+        finally:
+            conn.close()
+        # The conversation handle comes back as {"id": "conv_…"} (or a bare string).
+        c = d.get("conversation")
+        conv = c.get("id") if isinstance(c, dict) else c
+        # Assistant text: prefer the message's `output_text` parts so we don't
+        # surface a `reasoning` item; fall back to any text part. (status ==
+        # "requires_action" — the managed-agents interactive path — yields no
+        # output text here; that path isn't wired yet.)
+        text, fallback = "", ""
+        for item in (d.get("output") or []):
+            for part in (item.get("content") or []):
+                t = part.get("text") if isinstance(part, dict) else None
+                if not t:
+                    continue
+                if part.get("type") == "output_text":
+                    text = t
+                    break
+                fallback = fallback or t
+            if text:
+                break
+        return (text or fallback).strip(), conv
 
 
 def woollama_model(model, vendor):

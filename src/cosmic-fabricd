@@ -28,6 +28,9 @@ import core  # noqa: E402
 
 LOG = os.path.expanduser("~/.cache/cosmic-fabric/daemon.log")
 _pat_cache = None
+# Stateful chat: cosmic session name → woollama conversation id (claude-resume /
+# managed-agents own the transcript; we just hold the handle).
+_WOOLLAMA_CONVS = {}
 _lock = threading.Lock()
 FAB = None
 
@@ -96,10 +99,14 @@ def _woollama_sync(pol, pat, inp, model, vendor, inst, variables):
         log("woollama enabled but no server discoverable; falling back to fabric")
         return None
     try:
-        prompt = FAB.assemble_prompt(pat, inp, variables) if pat else inp
         wmodel = core.woollama_model(model, vendor)
+        # A recipe (woollama/<recipe>) owns its own prompt, so don't stack a
+        # fabric pattern on top of it — send the raw input. Otherwise fabric
+        # assembles the pattern and woollama just infers.
+        is_recipe = (vendor or "").lower() == "woollama"
+        prompt = inp if is_recipe else (FAB.assemble_prompt(pat, inp, variables) if pat else inp)
         out = wool.chat(wmodel, prompt, core.to_openai_options(inst))
-        log(f"run via woollama model={wmodel} → {len(out)}ch")
+        log(f"run via woollama model={wmodel} recipe={is_recipe} → {len(out)}ch")
         return out
     except Exception as e:
         log(f"woollama path failed ({e}); falling back to fabric")
@@ -181,6 +188,15 @@ def handle(req):
         return {"patterns": _pat_cache}
     if op == "models":
         return {"models": FAB.list_models(), "vendors": FAB.model_catalog()}
+    if op == "woollama_models":
+        # The router's addressable models, for the Run-tab per-run model picker.
+        pol = core.load_policy()
+        wool = core.WoollamaClient(address=(pol.get("woollama") or {}).get("address"), log=log)
+        try:
+            return {"models": wool.list_models()}
+        except Exception as e:
+            log(f"woollama_models error: {e}")
+            return {"models": [], "error": str(e)}
     if op == "assemble":
         pat = req.get("pattern")
         if not pat:
@@ -337,6 +353,36 @@ def stream_run(req, send):
 
     inp = req.get("input", "")
 
+    # Stateful chat via woollama's conversations API — for claude-code /
+    # claude-agent backends (claude-resume / managed-agents own the history).
+    # Non-streaming (woollama defers stateful streaming): one request, full reply.
+    if (session and core.woollama_enabled(pol)
+            and (vendor or "").lower() in ("claude-code", "claude-agent")):
+        wool = core.WoollamaClient(address=(pol.get("woollama") or {}).get("address"), log=log)
+        wmodel = core.woollama_model(model, vendor)
+        with _lock:
+            conv = _WOOLLAMA_CONVS.get(session)
+        log(f"run-stream stateful woollama model={wmodel} session={session} conv={conv}")
+        try:
+            text, new_conv = wool.respond(wmodel, inp, conv)
+        except Exception as e:
+            log(f"woollama respond error: {e}")
+            (broadcast if bcast else send)(
+                {"event": "error", "error": str(e)} if bcast else {"error": str(e)})
+            return
+        if new_conv:
+            with _lock:
+                _WOOLLAMA_CONVS[session] = new_conv
+        on_chunk(text)  # deliver the full reply as a single chunk
+        done = {"model": model, "vendor": vendor, "placement": None,
+                "warn_below": warn_below, "backend": "woollama"}
+        if bcast:
+            broadcast({"event": "done", **done})
+            notify_user(text, pat)
+        else:
+            send({"done": True, **done})
+        return
+
     # Tool-using pattern? Same branch as the sync `run` op — daemon owns the
     # loop, bypasses fabric. Each tool event becomes its own SSE-style line.
     meta = core.pattern_meta(pat) if pat else {}
@@ -385,8 +431,10 @@ def stream_run(req, send):
             else None)
     if wool is not None and wool.alive():
         try:
-            prompt = FAB.assemble_prompt(pat, inp, req.get("variables")) if pat else inp
             wmodel = core.woollama_model(model, vendor)
+            # A recipe owns its prompt — send raw input, don't stack a pattern.
+            is_recipe = (vendor or "").lower() == "woollama"
+            prompt = inp if is_recipe else (FAB.assemble_prompt(pat, inp, req.get("variables")) if pat else inp)
             out = wool.chat_stream(wmodel, prompt, on_chunk=on_chunk,
                                    options=core.to_openai_options(inst))
             backend = "woollama"

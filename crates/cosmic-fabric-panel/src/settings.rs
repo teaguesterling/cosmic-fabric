@@ -12,10 +12,11 @@ use cosmic::{
         Alignment, Length,
     },
     theme,
-    widget::{button, container, divider, radio, scrollable, text, text_input},
+    widget::{button, container, divider, radio, scrollable, text, text_input, toggler},
     Element,
 };
 
+use crate::daemon;
 use crate::policy::{self, Policy};
 
 pub const SETTINGS_APP_ID: &str = "com.github.teaguesterling.CosmicFabric.Settings";
@@ -68,6 +69,8 @@ pub struct SettingsApp {
     core: cosmic::app::Core,
     policy: Policy,
     warn_str: String,
+    wool_addr: String,
+    status: Option<daemon::Status>, // for the woollama reachability indicator
     last_error: Option<String>,
 }
 
@@ -76,6 +79,9 @@ pub enum Message {
     SetMode(Mode),
     SetOllamaUrl(String),
     SetWarn(String),
+    SetWoollamaEnabled(bool),
+    SetWoollamaAddress(String),
+    StatusDone(Result<daemon::Status, String>),
     DismissError,
 }
 
@@ -88,13 +94,19 @@ impl cosmic::Application for SettingsApp {
     fn init(core: app::Core, _flags: Self::Flags) -> (Self, app::Task<Self::Message>) {
         let policy = policy::load();
         let warn_str = policy.ollama.warn_below_gpu.to_string();
+        let wool_addr = policy.woollama.address.clone().unwrap_or_default();
         let me = Self {
             core,
             policy,
             warn_str,
+            wool_addr,
+            status: None,
             last_error: None,
         };
-        (me, app::Task::none())
+        let task = cosmic::Task::perform(daemon::status(), |r| {
+            cosmic::Action::App(Message::StatusDone(r))
+        });
+        (me, task)
     }
     fn core(&self) -> &cosmic::app::Core {
         &self.core
@@ -120,6 +132,18 @@ impl cosmic::Application for SettingsApp {
                     self.persist();
                 }
             }
+            Message::SetWoollamaEnabled(on) => {
+                self.policy.woollama.enabled = on;
+                self.persist();
+            }
+            Message::SetWoollamaAddress(s) => {
+                self.wool_addr = s.clone();
+                self.policy.woollama.address =
+                    Some(s.trim().to_string()).filter(|t| !t.is_empty());
+                self.persist();
+            }
+            Message::StatusDone(Ok(st)) => self.status = Some(st),
+            Message::StatusDone(Err(_)) => self.status = None,
             Message::DismissError => self.last_error = None,
         }
         app::Task::none()
@@ -165,6 +189,41 @@ impl cosmic::Application for SettingsApp {
             .spacing(spacing.space_xs)
             .align_y(Alignment::Center),
         );
+        col = col.push(divider::horizontal::default());
+
+        // ---- woollama (inference backend) ----
+        col = col.push(text::heading("woollama"));
+        col = col.push(text::caption(
+            "Route inference through the woollama router (fabric still assembles \
+             the prompt). The panel's status badge lights up when enabled.",
+        ));
+        col = col.push(
+            row![
+                toggler(self.policy.woollama.enabled).on_toggle(Message::SetWoollamaEnabled),
+                text::body("Route inference through woollama"),
+            ]
+            .spacing(spacing.space_xs)
+            .align_y(Alignment::Center),
+        );
+        col = col.push(
+            row![
+                text::body("Address").width(Length::Fixed(140.0)),
+                text_input("auto-discover (host:port to override)", &self.wool_addr)
+                    .on_input(Message::SetWoollamaAddress)
+                    .width(Length::Fill),
+            ]
+            .spacing(spacing.space_xs)
+            .align_y(Alignment::Center),
+        );
+        let reach = match &self.status {
+            Some(st) if st.woollama.reachable => format!(
+                "\u{25cf} reachable at {}",
+                st.woollama.endpoint.as_deref().unwrap_or("?")
+            ),
+            Some(_) => "\u{25cb} not running".to_string(),
+            None => "checking\u{2026}".to_string(),
+        };
+        col = col.push(text::caption(reach));
 
         if let Some(err) = &self.last_error {
             col = col.push(divider::horizontal::default());

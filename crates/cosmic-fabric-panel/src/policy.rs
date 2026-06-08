@@ -103,6 +103,18 @@ impl Default for OllamaCfg {
     }
 }
 
+/// The woollama inference seam: when `enabled`, the daemon routes plain runs
+/// through the woollama router instead of fabric's `/chat` (fabric still
+/// assembles the prompt). `address` overrides discovery (`host:port`); `None`
+/// means auto-discover via woollama's socket/.addr.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct WoollamaCfg {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub address: Option<String>,
+}
+
 /// The personalization profile's curated set, as include/exclude globs over
 /// pattern names (`*`/`?` wildcards, or exact names). A pattern is active when it
 /// matches an `include` glob (or `include` is empty = all) and no `exclude` glob.
@@ -144,6 +156,8 @@ pub struct Policy {
     pub surface: Surface,
     #[serde(default)]
     pub models: BTreeMap<String, Model>,
+    #[serde(default)]
+    pub woollama: WoollamaCfg,
 }
 
 impl Policy {

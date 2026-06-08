@@ -27,12 +27,30 @@ enum Role {
     Assistant,
 }
 
+/// Chat backend (temporary fixed set — until woollama enumerates cloud models in
+/// /v1/models, see woollama#3, this becomes a proper model picker).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ChatBackend {
+    Local,
+    Claude,
+}
+impl ChatBackend {
+    /// woollama model id this routes to; `None` = fabric/ollama session.
+    fn model_id(self) -> Option<String> {
+        match self {
+            ChatBackend::Local => None,
+            ChatBackend::Claude => Some("claude-code/sonnet".to_string()),
+        }
+    }
+}
+
 pub struct SessionApp {
     core: cosmic::app::Core,
     session: String,
+    backend: ChatBackend,
     messages: Vec<(Role, String)>,
     input: String,
-    pending: Option<(u64, String, String)>, // (id, session, input) → stream key
+    pending: Option<(u64, String, String, Option<String>)>, // (id, session, input, model)
     run_seq: u64,
     streaming: bool,
     error: Option<String>,
@@ -49,6 +67,7 @@ pub enum Message {
     Send,
     ChatEvent(daemon::RunEvent),
     NewSession,
+    SetBackend(ChatBackend),
     /// User clicked Approve/Deny on a pending confirm card.
     ConfirmTool { id: String, approved: bool },
     /// The tool_confirm op completed (ack from daemon).
@@ -97,6 +116,7 @@ impl cosmic::Application for SessionApp {
         let me = Self {
             core,
             session: new_session_name(),
+            backend: ChatBackend::Local,
             messages: Vec::new(),
             input: seed,
             pending: None,
@@ -119,8 +139,9 @@ impl cosmic::Application for SessionApp {
         match &self.pending {
             Some(p) => cosmic::iced::Subscription::run_with(
                 p.clone(),
-                |(_, session, input): &(u64, String, String)| {
-                    daemon::chat_stream(session.clone(), input.clone()).map(Message::ChatEvent)
+                |(_, session, input, model): &(u64, String, String, Option<String>)| {
+                    daemon::chat_stream(session.clone(), input.clone(), model.clone())
+                        .map(Message::ChatEvent)
                 },
             ),
             None => cosmic::iced::Subscription::none(),
@@ -138,7 +159,7 @@ impl cosmic::Application for SessionApp {
                 self.messages.push((Role::User, input.clone()));
                 self.messages.push((Role::Assistant, String::new()));
                 self.run_seq += 1;
-                self.pending = Some((self.run_seq, self.session.clone(), input));
+                self.pending = Some((self.run_seq, self.session.clone(), input, self.backend.model_id()));
                 self.input.clear();
                 self.streaming = true;
                 self.error = None;
@@ -200,6 +221,19 @@ impl cosmic::Application for SessionApp {
                 self.pending = None;
                 self.pending_confirm = None;
             }
+            Message::SetBackend(b) => {
+                if b != self.backend {
+                    self.backend = b;
+                    // a different backend = a different conversation → start fresh
+                    self.session = new_session_name();
+                    self.messages.clear();
+                    self.input.clear();
+                    self.error = None;
+                    self.streaming = false;
+                    self.pending = None;
+                    self.pending_confirm = None;
+                }
+            }
             Message::ConfirmTool { id, approved } => {
                 self.pending_confirm = None;
                 // Append a brief audit line to the current assistant turn so
@@ -224,10 +258,22 @@ impl cosmic::Application for SessionApp {
     fn view(&self) -> Element<'_, Message> {
         let s = theme::active().cosmic().spacing;
 
+        let local_btn = if self.backend == ChatBackend::Local {
+            button::suggested("Local")
+        } else {
+            button::text("Local").on_press(Message::SetBackend(ChatBackend::Local))
+        };
+        let claude_btn = if self.backend == ChatBackend::Claude {
+            button::suggested("Claude")
+        } else {
+            button::text("Claude").on_press(Message::SetBackend(ChatBackend::Claude))
+        };
         let header = cosmic::iced::widget::row![
             text::title3("Fabric chat"),
             text::caption(self.session.clone()),
             cosmic::widget::Space::new().width(Length::Fill),
+            local_btn,
+            claude_btn,
             button::text("New chat").on_press(Message::NewSession),
         ]
         .spacing(s.space_s)
