@@ -31,6 +31,10 @@ pub const WORKSPACE_APP_ID: &str = "com.github.teaguesterling.CosmicFabric.Works
 /// global default model."
 const DEFAULT_VENDOR: &str = "Default";
 
+/// The synthetic first entry in the Run-tab model picker that clears the per-run
+/// override (fall back to the pattern's configured model).
+const DEFAULT_MODEL_LABEL: &str = "(pattern default)";
+
 /// `thinking` dropdown values: index 0 = inherit/none, 1 = off, 2 = on. Used
 /// both on the (collapsed) add-variant row and the per-variant inline editor.
 const THINKING_OPTS: [&str; 3] = ["(default)", "off", "on"];
@@ -200,6 +204,9 @@ pub struct Workspace {
     pattern_labels: Vec<String>, // pretty labels for the active set
     pattern_state: combo_box::State<String>, // searchable picker state (mirrors pattern_labels)
     selected_idx: Option<usize>,
+    run_model: Option<String>, // per-run model override (woollama id); None = pattern default
+    run_model_state: combo_box::State<String>, // searchable picker over woollama's models
+    woollama_models: Vec<String>,
     mode: WorkMode,
     library_query: String,
     catalog: BTreeMap<String, Vec<String>>, // vendor → models, for the picker
@@ -233,7 +240,7 @@ pub struct Workspace {
     ran: bool, // a run has been started → reveal the Response card
     result_meta: Option<String>,
     running: bool,
-    pending: Option<(u64, String, String)>, // (run id, pattern, input) → stream sub
+    pending: Option<(u64, String, String, Option<String>)>, // (run id, pattern, input, model override)
     run_seq: u64,
 
     error: Option<String>,
@@ -257,6 +264,8 @@ pub enum Message {
     ImageFromClipboard,
     RunImageDone(Result<RunResult, String>),
     PickPattern(String),
+    PickRunModel(String),
+    WoollamaModelsDone(Result<Vec<String>, String>),
     AssembleDebounced(u64),
     AssembleDone(u64, Result<String, String>),
     TogglePrompt,
@@ -352,6 +361,9 @@ impl cosmic::Application for Workspace {
             pattern_labels: Vec::new(),
             pattern_state: combo_box::State::new(Vec::new()),
             selected_idx: None,
+            run_model: None,
+            run_model_state: combo_box::State::new(Vec::new()),
+            woollama_models: Vec::new(),
             mode: WorkMode::Run,
             library_query: String::new(),
             catalog: BTreeMap::new(),
@@ -386,7 +398,7 @@ impl cosmic::Application for Workspace {
             open_menu: None,
         };
         me.seed_variant_edits();   // first paint shows what's currently in policy
-        let mut tasks = vec![status_task(), patterns_task(), catalog_task()];
+        let mut tasks = vec![status_task(), patterns_task(), catalog_task(), woollama_models_task()];
         if clip_image.is_none() {
             tasks.push(load_clipboard_task()); // text clipboard → source editor
         }
@@ -404,8 +416,9 @@ impl cosmic::Application for Workspace {
         match &self.pending {
             Some(p) => cosmic::iced::Subscription::run_with(
                 p.clone(),
-                |(_, pat, input): &(u64, String, String)| {
-                    daemon::run_stream(pat.clone(), input.clone()).map(Message::RunEvent)
+                |(_, pat, input, model): &(u64, String, String, Option<String>)| {
+                    daemon::run_stream(pat.clone(), input.clone(), model.clone())
+                        .map(Message::RunEvent)
                 },
             ),
             None => cosmic::iced::Subscription::none(),
@@ -496,6 +509,18 @@ impl cosmic::Application for Workspace {
                 self.selected_idx = self.pattern_labels.iter().position(|l| *l == label);
                 return self.trigger_assemble();
             }
+            Message::PickRunModel(id) => {
+                // The synthetic "(pattern default)" entry clears the override.
+                self.run_model = (id != DEFAULT_MODEL_LABEL).then_some(id);
+            }
+            Message::WoollamaModelsDone(Ok(models)) => {
+                self.woollama_models = models;
+                let mut opts = Vec::with_capacity(self.woollama_models.len() + 1);
+                opts.push(DEFAULT_MODEL_LABEL.to_string());
+                opts.extend(self.woollama_models.iter().cloned());
+                self.run_model_state = combo_box::State::new(opts);
+            }
+            Message::WoollamaModelsDone(Err(_)) => self.woollama_models.clear(),
             Message::AssembleDebounced(g) => {
                 if g == self.edit_gen {
                     return self.trigger_assemble();
@@ -554,7 +579,7 @@ impl cosmic::Application for Workspace {
                 }
                 let pattern = self.patterns[idx].clone();
                 self.run_seq += 1;
-                self.pending = Some((self.run_seq, pattern, input));
+                self.pending = Some((self.run_seq, pattern, input, self.run_model.clone()));
                 self.response = Some(String::new());
                 self.on_run_started();
                 self.result_meta = None;
@@ -925,6 +950,20 @@ impl cosmic::Application for Workspace {
                 ]
                 .spacing(s.space_s)
                 .align_y(Alignment::Center);
+                // Per-run model override — shown only when woollama routing is on
+                // (it sources the model list). Default = the pattern's model.
+                if self.status.as_ref().map_or(false, |st| st.woollama.enabled) {
+                    runrow = runrow.push(text::body("Model"));
+                    runrow = runrow.push(
+                        combo_box(
+                            &self.run_model_state,
+                            DEFAULT_MODEL_LABEL,
+                            self.run_model.as_ref(),
+                            Message::PickRunModel,
+                        )
+                        .width(Length::Fixed(220.0)),
+                    );
+                }
                 let run_btn = button::suggested(if self.running { "Running…" } else { "Run" });
                 runrow = runrow.push(if self.running {
                     run_btn
@@ -1722,6 +1761,12 @@ fn save_to_file(text: &str, pattern: Option<&str>) -> Result<String, String> {
     let path = format!("{home}/{pat}-{ts}.md");
     std::fs::write(&path, text).map_err(|e| e.to_string())?;
     Ok(path)
+}
+
+fn woollama_models_task() -> app::Task<Message> {
+    cosmic::Task::perform(daemon::woollama_models(), |r| {
+        cosmic::Action::App(Message::WoollamaModelsDone(r))
+    })
 }
 
 fn status_task() -> app::Task<Message> {

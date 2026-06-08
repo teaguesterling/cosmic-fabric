@@ -108,6 +108,14 @@ pub async fn patterns() -> Result<Vec<String>, String> {
     serde_json::from_value(arr).map_err(|e| e.to_string())
 }
 
+/// woollama's addressable model ids (`provider/model`), for the Run-tab per-run
+/// model picker. Empty when woollama isn't reachable.
+pub async fn woollama_models() -> Result<Vec<String>, String> {
+    let v = call(serde_json::json!({ "op": "woollama_models" })).await?;
+    let arr = v.get("models").cloned().unwrap_or_default();
+    serde_json::from_value(arr).map_err(|e| e.to_string())
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct RunResult {
     pub output: Option<String>,
@@ -242,10 +250,18 @@ fn tool_event_from_obj(obj: &serde_json::Value) -> Option<RunEvent> {
 pub fn run_stream(
     pattern: String,
     input: String,
+    model_id: Option<String>,
 ) -> impl cosmic::iced::futures::Stream<Item = RunEvent> {
-    stream_request(serde_json::json!({
+    let mut req = serde_json::json!({
         "op": "run", "stream": true, "pattern": pattern, "input": input
-    }))
+    });
+    // A per-run override: `provider/model` (woollama's id) → the daemon's
+    // model+vendor override (split on the FIRST '/').
+    if let Some((vendor, model)) = model_id.as_deref().and_then(|s| s.split_once('/')) {
+        req["vendor"] = vendor.into();
+        req["model"] = model.into();
+    }
+    stream_request(req)
 }
 
 /// Stream a chat turn into a fabric session (multi-turn history server-side).

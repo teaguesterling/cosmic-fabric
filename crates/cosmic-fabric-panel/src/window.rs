@@ -94,7 +94,7 @@ impl cosmic::Application for Window {
                 cosmic::iced::Subscription::run_with(
                     p.clone(),
                     |(_, pat, input): &(u64, String, String)| {
-                        daemon::run_stream(pat.clone(), input.clone()).map(Message::RunEvent)
+                        daemon::run_stream(pat.clone(), input.clone(), None).map(Message::RunEvent)
                     },
                 ),
             ]),
