@@ -264,15 +264,23 @@ pub fn run_stream(
     stream_request(req)
 }
 
-/// Stream a chat turn into a fabric session (multi-turn history server-side).
-/// No pattern → the daemon uses `raw_query` (the universal relay).
+/// Stream a chat turn into a session. With no `model_id`, the daemon uses fabric
+/// (`raw_query`, history server-side). With a `claude-code`/`claude-agent`
+/// `provider/model` id, the daemon routes the session through woollama's stateful
+/// `/v1/responses` (the backend owns the transcript).
 pub fn chat_stream(
     session: String,
     input: String,
+    model_id: Option<String>,
 ) -> impl cosmic::iced::futures::Stream<Item = RunEvent> {
-    stream_request(serde_json::json!({
+    let mut req = serde_json::json!({
         "op": "run", "stream": true, "session": session, "input": input
-    }))
+    });
+    if let Some((vendor, model)) = model_id.as_deref().and_then(|s| s.split_once('/')) {
+        req["vendor"] = vendor.into();
+        req["model"] = model.into();
+    }
+    stream_request(req)
 }
 
 /// Shared streaming-run transport: write the request, yield `Chunk`s then `Done`/`Error`.
