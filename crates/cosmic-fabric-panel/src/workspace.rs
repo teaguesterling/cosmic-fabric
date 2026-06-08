@@ -123,7 +123,9 @@ fn apply_variant_field(v: &mut policy::Variant, field: VariantField, s: &str) ->
 }
 
 pub fn run() -> cosmic::iced::Result {
-    let settings = cosmic::app::Settings::default().size(cosmic::iced::Size::new(640.0, 780.0));
+    // Close to the pre-run content height; `fit_window` refines it as the layout
+    // changes (collapse/expand, run, mode/origin switches).
+    let settings = cosmic::app::Settings::default().size(cosmic::iced::Size::new(640.0, 620.0));
     cosmic::app::run::<Workspace>(settings, ())
 }
 
@@ -417,6 +419,7 @@ impl cosmic::Application for Workspace {
             Message::PatternsDone(Ok(p)) => {
                 self.all_patterns = p;
                 self.recompute_active();
+                return self.fit_window(); // first fit once the window exists
             }
             Message::PatternsDone(Err(e)) => self.error = Some(e),
 
@@ -424,6 +427,7 @@ impl cosmic::Application for Workspace {
                 self.origin = o;
                 self.transform_note = None;
                 self.status_msg = None;
+                return self.fit_window();
             }
             Message::SourceAction(action) => {
                 let is_edit = matches!(action, text_editor::Action::Edit(_));
@@ -505,8 +509,14 @@ impl cosmic::Application for Workspace {
                     }
                 }
             }
-            Message::TogglePrompt => self.prompt_collapsed = !self.prompt_collapsed,
-            Message::ToggleResponse => self.response_collapsed = !self.response_collapsed,
+            Message::TogglePrompt => {
+                self.prompt_collapsed = !self.prompt_collapsed;
+                return self.fit_window();
+            }
+            Message::ToggleResponse => {
+                self.response_collapsed = !self.response_collapsed;
+                return self.fit_window();
+            }
 
             Message::Run => {
                 if self.origin == Origin::Image {
@@ -524,10 +534,14 @@ impl cosmic::Application for Workspace {
                     self.error = None;
                     self.status_msg = None;
                     // vision run is non-streaming (CLI shell-out) → a one-shot Task
-                    return cosmic::Task::perform(
-                        daemon::run_image(path, question, pattern),
-                        |r| cosmic::Action::App(Message::RunImageDone(r)),
-                    );
+                    let fit = self.fit_window();
+                    return cosmic::Task::batch([
+                        fit,
+                        cosmic::Task::perform(
+                            daemon::run_image(path, question, pattern),
+                            |r| cosmic::Action::App(Message::RunImageDone(r)),
+                        ),
+                    ]);
                 }
                 let Some(idx) = self.selected_idx else {
                     self.error = Some("Pick a pattern first.".into());
@@ -547,6 +561,7 @@ impl cosmic::Application for Workspace {
                 self.running = true;
                 self.error = None;
                 self.status_msg = None;
+                return self.fit_window();
             }
             Message::RunEvent(ev) => match ev {
                 daemon::RunEvent::Chunk(s) => {
@@ -632,7 +647,10 @@ impl cosmic::Application for Workspace {
                     Dest::Alpaca => {} // disabled; never fired
                 }
             }
-            Message::SetMode(m) => self.mode = m,
+            Message::SetMode(m) => {
+                self.mode = m;
+                return self.fit_window();
+            }
             Message::LibraryQuery(q) => self.library_query = q,
             Message::ToggleActive(name) => {
                 self.policy.toggle_active(&name);
@@ -817,6 +835,7 @@ impl cosmic::Application for Workspace {
                 self.ran = false;
                 self.prompt_collapsed = false;
                 self.response_collapsed = false;
+                return self.fit_window();
             }
             Message::OpenSettings => {
                 if let Ok(exe) = std::env::current_exe() {
@@ -970,6 +989,41 @@ impl Workspace {
         self.ran = true;
         self.prompt_collapsed = true;
         self.response_collapsed = false;
+    }
+
+    /// A size-to-content height for the Run console so the window doesn't leave a
+    /// tall empty box below the cards. The view is wrapped in a scrollable, so an
+    /// underestimate scrolls gracefully — we lean a touch generous. Library/Models
+    /// are long lists, so they keep a tall window.
+    fn target_height(&self) -> f32 {
+        if self.mode != WorkMode::Run {
+            return 780.0;
+        }
+        let mut h: f32 = 96.0; // window padding + header + divider
+        h += 32.0 + 36.0 + 132.0 + 30.0; // source: tabs, loader, editor, char row
+        if matches!(self.origin, Origin::Url | Origin::File | Origin::Image) {
+            h += 44.0; // an input+button loader row
+        }
+        if self.origin == Origin::Image {
+            h += 28.0; // vision caption
+        }
+        h += 44.0; // pattern + run row
+        h += 44.0 + if self.prompt_collapsed { 0.0 } else { 166.0 }; // prompt card
+        if self.ran {
+            h += 44.0 + if self.response_collapsed { 0.0 } else { 196.0 }; // response card
+        }
+        h += 28.0; // status/error breathing room
+        h.clamp(360.0, 1000.0)
+    }
+
+    /// Resize the window to fit the current content (see `target_height`).
+    fn fit_window(&self) -> app::Task<Message> {
+        match self.core.main_window_id() {
+            Some(id) => {
+                cosmic::iced::window::resize(id, cosmic::iced::Size::new(640.0, self.target_height()))
+            }
+            None => app::Task::none(),
+        }
     }
 
     fn recompute_active(&mut self) {
