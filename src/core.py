@@ -654,14 +654,21 @@ class WoollamaClient:
             conn.close()
         return "".join(out).strip()
 
-    def respond(self, model, input_text, conversation_id=None, timeout=600):
+    def respond(self, model, input_text, conversation_id=None, key=None, timeout=600):
         """POST /v1/responses (stateful) → (assistant_text, conversation_id). For
         the state-owning backends (claude-resume / managed-agents). Non-streaming —
-        woollama defers stateful streaming. Pass the prior conversation_id to
-        continue a session; None starts one (store:true)."""
+        woollama defers stateful streaming.
+
+        Pass `key` (the caller's own session name) for attach-by-key: woollama owns
+        the durable key→conversation map (persisted across woollama restarts), so we
+        never hold the conversation id ourselves — the same key continues the same
+        conversation. Alternatively pass an explicit `conversation_id` (it takes
+        precedence). Neither starts a fresh, un-keyed conversation."""
         body = {"model": model, "input": input_text, "store": True}
         if conversation_id:
             body["conversation"] = conversation_id
+        elif key:
+            body["key"] = key
         conn = self._connect(timeout)
         try:
             conn.request("POST", "/v1/responses",
