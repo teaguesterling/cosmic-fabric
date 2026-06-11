@@ -28,9 +28,6 @@ import core  # noqa: E402
 
 LOG = os.path.expanduser("~/.cache/cosmic-fabric/daemon.log")
 _pat_cache = None
-# Stateful chat: cosmic session name → woollama conversation id (claude-resume /
-# managed-agents own the transcript; we just hold the handle).
-_WOOLLAMA_CONVS = {}
 _lock = threading.Lock()
 FAB = None
 
@@ -360,19 +357,20 @@ def stream_run(req, send):
             and (vendor or "").lower() in ("claude-code", "claude-agent")):
         wool = core.WoollamaClient(address=(pol.get("woollama") or {}).get("address"), log=log)
         wmodel = core.woollama_model(model, vendor)
-        with _lock:
-            conv = _WOOLLAMA_CONVS.get(session)
-        log(f"run-stream stateful woollama model={wmodel} session={session} conv={conv}")
+        # Attach-by-key: drive the conversation by our own (namespaced) session
+        # name and let woollama own the durable key→conv map — it survives daemon
+        # restarts, and we no longer hold the conversation id ourselves. The
+        # `cosmic-fabric:` prefix isolates our keys in woollama's GLOBAL keyspace
+        # (other clients — lackpy, a second panel — share that map).
+        key = f"cosmic-fabric:{session}"
+        log(f"run-stream stateful woollama model={wmodel} session={session} (attach-by-key)")
         try:
-            text, new_conv = wool.respond(wmodel, inp, conv)
+            text, _ = wool.respond(wmodel, inp, key=key)  # we no longer keep the conv id
         except Exception as e:
             log(f"woollama respond error: {e}")
             (broadcast if bcast else send)(
                 {"event": "error", "error": str(e)} if bcast else {"error": str(e)})
             return
-        if new_conv:
-            with _lock:
-                _WOOLLAMA_CONVS[session] = new_conv
         on_chunk(text)  # deliver the full reply as a single chunk
         done = {"model": model, "vendor": vendor, "placement": None,
                 "warn_below": warn_below, "backend": "woollama"}
