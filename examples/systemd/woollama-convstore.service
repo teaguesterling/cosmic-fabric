@@ -1,0 +1,25 @@
+# woollama conversation store — file-backed REST reference store.
+#
+# EXAMPLE systemd --user unit. Install with:
+#   cp examples/systemd/woollama-convstore.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now woollama-convstore.service
+#
+# Adjust the two paths below if your woollama checkout isn't at ~/Projects/woollama.
+# See doc/local-ollama-sessions.md for the full runbook.
+
+[Unit]
+Description=woollama conversation store (file-backed REST reference store)
+Documentation=https://github.com/teaguesterling/cosmic-fabric/blob/main/doc/local-ollama-sessions.md
+
+[Service]
+Type=simple
+# The store keeps one JSON file per conversation thread under CONVSTORE_DIR.
+Environment=CONVSTORE_DIR=%h/.local/state/woollama-convstore
+# NOTE: the executable path is NOT env-expanded by systemd — keep it literal.
+ExecStart=%h/Projects/woollama/.venv/bin/python %h/Projects/woollama/examples/rest-convstore/server.py --port 9000
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

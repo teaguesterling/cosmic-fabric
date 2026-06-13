@@ -1,0 +1,33 @@
+# woollama router — keyless (claude-code via the subscription CLI).
+#
+# EXAMPLE systemd --user unit. Optional: only needed if you want woollama itself
+# to survive reboots (otherwise start it however you normally do). Install with:
+#   cp examples/systemd/woollama.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now woollama.service
+#
+# Adjust the ExecStart path if your woollama checkout isn't at ~/Projects/woollama.
+# See doc/local-ollama-sessions.md for the full runbook.
+
+[Unit]
+Description=woollama router (keyless: claude-code via subscription CLI)
+Documentation=https://github.com/teaguesterling/cosmic-fabric/blob/main/doc/local-ollama-sessions.md
+# The store can start independently (woollama connects per-request), but ordering
+# it first avoids a cold-start window where ollama sessions fall back to fabric.
+Wants=woollama-convstore.service
+After=woollama-convstore.service network-online.target
+
+[Service]
+Type=simple
+# A --user service has a minimal PATH. woollama shells out to `claude` (claude-code)
+# and `ollama`; if those aren't on the default PATH, add their dirs here.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+# KEYLESS ON PURPOSE: claude-code uses the Claude subscription CLI — do NOT inject
+# ANTHROPIC_API_KEY into this long-lived process (project budget). Cloud models
+# that need an API key are out of scope for this unit.
+ExecStart=%h/Projects/woollama/.venv/bin/woollama
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

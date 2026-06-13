@@ -44,7 +44,7 @@ CONTEXT 16384 for that run.
 
 ---
 
-## 2. Stateful sessions for local (ollama) models — woollama backends SHIPPED; cosmic-fabric + one config step remain
+## 2. Stateful sessions for local (ollama) models — ✅ DONE (code); operational setup is a runbook
 
 **Was:** woollama had no state-owning backend for ollama models (the duckdb
 `stored` backend was shipped 2026-06-05 and reverted 2026-06-06 — "woollama must
@@ -59,18 +59,20 @@ never be the store"), so local-model session chat couldn't route through
   `/v1/responses` + `/v1/conversations`. The principle holds: woollama routes
   conversation *handles*; the external store owns the *bytes*.
 
-**Remaining — the entry point for a future session:**
-1. **woollama config (one-time):** wire a `conversationStore` provider in woollama's
-   `mcp.json` (an MCP store server, or an HTTP file-store URL — both reference
-   providers exist). Until wired, `backend_for_model("ollama/…")` is still `None`
-   (stateless). *Decide which store first* (reference MCP store vs. a real one).
-2. **cosmic-fabric (small, thanks to attach-by-key):** broaden the stateful guard
-   in `cosmic-fabricd:stream_run` — currently
-   `vendor in ("claude-code", "claude-agent")` — to also include `Local`/ollama
-   sessions, routing them through the **same**
-   `wool.respond(..., key="cosmic-fabric:{session}")` path. No new daemon state;
-   attach-by-key already gives durable, namespaced continuity. The `session.rs`
-   `Local` backend's chat then becomes stateful instead of one-shot.
+**Done (cosmic-fabric, PR #5):** `cosmic-fabricd:stream_run` routes `Local`/ollama
+sessions through woollama via `wool.respond(..., key="cosmic-fabric:{session}")`
+(attach-by-key), with a clean fallback to fabric's server-side session when
+woollama is down or has no store wired (HTTP 501). `core.WoollamaClient.respond()`
+now raises on non-2xx so that fallback can fire. No new daemon state.
+
+**Operational setup (a runbook, not code) — see
+[`local-ollama-sessions.md`](local-ollama-sessions.md):** the feature is live only
+while a `conversationStore` is wired in woollama's `mcp.json` and a store is
+running (reference: `examples/rest-convstore`; example systemd `--user` units in
+[`examples/systemd/`](../examples/systemd/)). Until then, Local sessions
+transparently use fabric (`backend=fabric`) — no regression. *The woollama Rust
+port's slice 6 (conversation-store seam) may reshape the store config — treat the
+reference store as proving the path, not production infra.*
 
 ---
 
