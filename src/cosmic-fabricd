@@ -444,16 +444,34 @@ def stream_run(req, send):
     else:
         if wool is not None:
             log("woollama enabled but no server discoverable; falling back to fabric")
-        mctx = inst.get("ctx") or (core.pick_ctx(inp) if (vendor or "").lower() == "ollama" else None)
-        try:
-            out = FAB.run(pat, inp, model, vendor, req.get("variables"), opts,
-                          on_chunk=on_chunk, model_ctx=mctx, session=session,
-                          context=req.get("context"), strategy=req.get("strategy"),
-                          language=req.get("language"), search=bool(req.get("search")))
-        except Exception as e:
-            log(f"run-stream error: {e}")
-            (broadcast if bcast else send)({"event": "error", "error": str(e)} if bcast else {"error": str(e)})
-            return
+        out = None
+        # Local/ollama stateful chat through woollama (conv-7 store-backed): drive
+        # the conversation by our own session key (attach-by-key) when woollama has
+        # a conversation store wired. Degrades cleanly — if woollama is down or has
+        # no store for ollama (HTTP 501), we fall through to fabric's server-side
+        # session below, so Local chat keeps working without a store configured.
+        if session and core.woollama_enabled(pol) and (vendor or "").lower() == "ollama":
+            wsess = core.WoollamaClient(address=(pol.get("woollama") or {}).get("address"), log=log)
+            if wsess.alive():
+                try:
+                    text, _ = wsess.respond(core.woollama_model(model, vendor), inp,
+                                            key=f"cosmic-fabric:{session}")
+                    on_chunk(text)  # full reply as one chunk (woollama defers stateful streaming)
+                    out, backend = text, "woollama"
+                    log(f"run-stream ollama session via woollama (attach-by-key) → {len(text)}ch")
+                except Exception as e:
+                    log(f"woollama ollama-session unavailable ({e}); falling back to fabric session")
+        if out is None:
+            mctx = inst.get("ctx") or (core.pick_ctx(inp) if (vendor or "").lower() == "ollama" else None)
+            try:
+                out = FAB.run(pat, inp, model, vendor, req.get("variables"), opts,
+                              on_chunk=on_chunk, model_ctx=mctx, session=session,
+                              context=req.get("context"), strategy=req.get("strategy"),
+                              language=req.get("language"), search=bool(req.get("search")))
+            except Exception as e:
+                log(f"run-stream error: {e}")
+                (broadcast if bcast else send)({"event": "error", "error": str(e)} if bcast else {"error": str(e)})
+                return
     pct = core.gpu_placement(model, pol["ollama"]["url"]) if (vendor or "").lower() == "ollama" else None
     log(f"run-stream done: placement={pct} broadcast={bcast} backend={backend}")
     done = {"model": model, "vendor": vendor, "placement": pct, "warn_below": warn_below,

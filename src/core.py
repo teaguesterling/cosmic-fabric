@@ -674,7 +674,16 @@ class WoollamaClient:
             conn.request("POST", "/v1/responses",
                          body=json.dumps(body).encode(),
                          headers={"Content-Type": "application/json"})
-            d = json.load(conn.getresponse())
+            resp = conn.getresponse()
+            raw = resp.read()
+            # Surface a non-2xx (e.g. 501 "no stateful backend for this model" when
+            # no conversation store is wired) as an exception, so callers can fall
+            # back rather than silently delivering an empty reply.
+            if resp.status >= 400:
+                raise RuntimeError(
+                    f"woollama /v1/responses {resp.status}: "
+                    f"{raw[:300].decode('utf-8', 'replace')}")
+            d = json.loads(raw)
         finally:
             conn.close()
         # The conversation handle comes back as {"id": "conv_…"} (or a bare string).
