@@ -143,6 +143,11 @@ mode = "notify"   # notify | dialog | edit | clipboard
 bin = "/opt/ollama/bin/ollama"
 url = "http://localhost:11434"
 warn_below_gpu = 99   # notify if an Ollama run lands below this % on the GPU
+
+# Optional: route inference (and stateful Local chat) through the woollama router.
+[woollama]
+enabled = false        # true → plain runs + Local sessions go through woollama
+# address = "host:port" # override discovery (default: $XDG_RUNTIME_DIR/woollama.sock)
 ```
 
 **`[default]` / `[patterns]`** — `model`, `vendor` (`Ollama` or `Anthropic`), and
@@ -162,6 +167,17 @@ warn_below_gpu = 99   # notify if an Ollama run lands below this % on the GPU
 **`[ollama]`** — `url` is used now for the GPU-placement check; `bin` is reserved for
 the daemon's future model-lifecycle role; `warn_below_gpu` sets the spill-warning
 threshold.
+
+**`[woollama]`** *(optional)* — when `enabled`, plain runs route their inference
+through the [woollama](https://github.com/teaguesterling/woollama) router (fabric
+assembles the prompt, woollama infers), and **Local** chat sessions become
+*stateful* via woollama's conversation store (otherwise they're one-shot). Off by
+default; everything falls back to fabric automatically when woollama is unreachable
+or unconfigured, so enabling it never breaks a run. `address` overrides discovery
+(default: woollama's owner-only Unix socket at `$XDG_RUNTIME_DIR/woollama.sock`).
+Standing up stateful Local sessions — the conversation store plus the `systemd`
+units — is covered in the runbook,
+[`local-ollama-sessions.md`](local-ollama-sessions.md).
 
 ## How it works
 
