@@ -1,8 +1,20 @@
-# cosmic-goo ↔ cosmic-fabric integration (draft)
+# cosmic-goo ↔ cosmic-fabric integration (SUPERSEDED)
 
-> Status: draft. The cosmic-fabric side (the daemon ops) is built + tested; the
-> cosmic-goo side (the `fabric` route) lands when goo's route layer is built
-> (goo:// is designed-not-built — see cosmic-goo `doc/design/`).
+> **⚠️ SUPERSEDED (2026-06-17).** The design below — goo talking to
+> **`cosmic-fabricd`'s socket** via a `goo://channel/fabric` handler over the
+> daemon's `run`/`assemble` ops — **was never built, and goo bypassed it.**
+> cosmic-goo instead routes inference through the **woollama (and fabric) CLIs
+> directly**: see its `plugins/claude-routing.toml` ("Routes text verbs to
+> woollama (inference), Claude Desktop, Claude Code, or clipboard") and the `via`
+> route templates in `crates/goo-engine/src/adverbs.rs` —
+> `via=woollama` → `woollama {model} <<< {prompt}` (default `ollama/qwen3:8b`),
+> `via=fabric` → `… | fabric -p {pattern}`. goo never connects to the daemon
+> socket. This matches the agreed architecture — **woollama is the inference
+> backbone** — rather than goo↔cosmic-fabricd.
+>
+> cosmic-fabric's `run`/`assemble`/`patterns` daemon ops (below) are still built &
+> tested; goo just doesn't consume them over the socket. The original design is
+> kept below for historical context.
 
 ## One channel
 
