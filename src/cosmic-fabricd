@@ -566,6 +566,12 @@ def main():
             pass  # stale socket, no live daemon → safe to take over
     FAB = core.FabricClient(log=log)
     FAB.ensure_serve()
+    # Own a woollama instance too (discover-first: attaches to a running
+    # woollama.service, else spawns a keyless woollamad). Gated on [woollama].
+    _pol = core.load_policy()
+    if core.woollama_enabled(_pol):
+        _wc = _pol.get("woollama") or {}
+        core.WoollamaClient(address=_wc.get("address"), log=log).ensure_serve(bin=_wc.get("bin"))
     try:
         os.unlink(path)
     except FileNotFoundError:
