@@ -80,6 +80,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 {"id": "ollama/mock-model", "object": "model", "owned_by": "ollama"},
                 {"id": "woollama/echo", "object": "model", "owned_by": "woollama"},
             ]})
+        elif self.path == "/w1/patterns":  # woollama's own namespace (not OpenAI)
+            self._json({"data": [
+                {"name": "echo-pattern", "variables": ["tone"], "source": "fabric"},
+            ]})
         else:
             self._json({"error": "not found"}, 404)
 
@@ -89,6 +93,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(n) or b"{}")
         except Exception:
             body = {}
+        if self.path.startswith("/w1/patterns/"):  # woollama's /w1 namespace
+            self._w1_pattern(body)
+            return
         if self.path != "/v1/chat/completions":
             self._json({"error": "not found"}, 404)
             return
@@ -97,11 +104,31 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if body.get("stream"):
             self._sse(model, reply)
         else:
-            self._json({
-                "id": "chatcmpl-mock", "object": "chat.completion", "model": model,
-                "choices": [{"index": 0, "finish_reason": "stop",
-                             "message": {"role": "assistant", "content": reply}}],
-            })
+            self._completion(model, reply)
+
+    def _completion(self, model, reply):
+        self._json({
+            "id": "chatcmpl-mock", "object": "chat.completion", "model": model,
+            "choices": [{"index": 0, "finish_reason": "stop",
+                         "message": {"role": "assistant", "content": reply}}],
+        })
+
+    def _w1_pattern(self, body):
+        # /w1/patterns/<name>/<render|run> — make pattern+variables assertable.
+        rest = self.path[len("/w1/patterns/"):]
+        name, _, op = rest.partition("/")
+        inp = body.get("input", "") or ""
+        variables = body.get("variables") or {}
+        vstr = " ".join(f"{k}={v}" for k, v in sorted(variables.items()))
+        tag = name + (f"[{vstr}]" if vstr else "")
+        if op == "render":  # render-without-run
+            self._json({"prompt": f"<{tag}>\n\n{inp}"})
+        elif op == "run":  # templated run + infer (OpenAI-shaped result)
+            model = body.get("model", "ollama/mock-model")
+            reply = f"<{tag}> {inp}" if ECHO else REPLY
+            self._sse(model, reply) if body.get("stream") else self._completion(model, reply)
+        else:
+            self._json({"error": "not found"}, 404)
 
     def _sse(self, model, reply):
         # Close-delimited SSE: simplest envelope http.client reads cleanly to EOF.
