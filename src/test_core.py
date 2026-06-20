@@ -8,6 +8,7 @@ import json
 import os
 import sys
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import core  # noqa: E402
@@ -647,6 +648,45 @@ class WoollamaSeam(unittest.TestCase):
         self.assertEqual(body["messages"], [{"role": "user", "content": "the prompt"}])
         self.assertTrue(body["stream"])
         self.assertAlmostEqual(body["temperature"], 0.3)
+
+
+class WoollamaEnsureServe(unittest.TestCase):
+    """The discover-first, keyless auto-spawn supervisor."""
+
+    def _client(self):
+        # injected transport so construction does no real discovery
+        return core.WoollamaClient(transport=("tcp", "127.0.0.1", 1))
+
+    def test_discover_first_attaches_without_spawn(self):
+        c = self._client()
+        with mock.patch.object(c, "alive", return_value=True), \
+             mock.patch.object(core.subprocess, "Popen") as popen:
+            self.assertTrue(c.ensure_serve(wait=0))
+            popen.assert_not_called()  # already up → never spawn
+
+    def test_no_binary_returns_false_without_spawn(self):
+        c = self._client()
+        with mock.patch.object(c, "alive", return_value=False), \
+             mock.patch.object(c, "_locate_woollamad", return_value=None), \
+             mock.patch.object(core.subprocess, "Popen") as popen:
+            self.assertFalse(c.ensure_serve(wait=0))
+            popen.assert_not_called()  # no binary → don't crash, don't spawn
+
+    def test_spawn_is_keyless(self):
+        c = self._client()
+        captured = {}
+
+        def fake_popen(cmd, env=None, **kw):
+            captured["env"] = env
+            return mock.MagicMock()
+
+        with mock.patch.object(c, "alive", return_value=False), \
+             mock.patch.object(c, "_locate_woollamad", return_value="/fake/woollamad"), \
+             mock.patch.dict(os.environ, {"ANTHROPIC_API_KEY": "secret"}, clear=False), \
+             mock.patch.object(core.subprocess, "Popen", side_effect=fake_popen):
+            c.ensure_serve(wait=0)
+        self.assertIn("env", captured)
+        self.assertNotIn("ANTHROPIC_API_KEY", captured["env"])  # budget: keyless owner
 
 
 if __name__ == "__main__":

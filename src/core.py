@@ -29,7 +29,7 @@ def load_policy():
         # woollama inference seam: when enabled, plain (non-tool, non-image) runs
         # route their inference through the woollama router — fabric assembles the
         # prompt, woollama infers. Off by default; fabric stays the fallback.
-        "woollama": {"enabled": False, "address": None},
+        "woollama": {"enabled": False, "address": None, "bin": None},
     }
     try:
         import tomllib
@@ -556,6 +556,7 @@ class WoollamaClient:
     force a specific TCP endpoint, or `transport` to inject one (tests)."""
 
     def __init__(self, address=None, transport=None, log=lambda m: None):
+        self._address = address
         self._transport = transport if transport is not None else resolve_woollama_transport(address)
         self.log = log
 
@@ -590,6 +591,58 @@ class WoollamaClient:
                 conn.close()
         except Exception:
             return False
+
+    def _locate_woollamad(self, bin_hint=None):
+        """Find the woollamad binary: explicit `[woollama].bin` → PATH (with
+        ~/.local/bin prepended) → ~/.local/bin/woollamad. The Rust port may name
+        the binary `woollama-server`, so try both. Returns a path or None."""
+        import shutil
+        if bin_hint:
+            p = os.path.expanduser(bin_hint)
+            if os.path.exists(p):
+                return p
+        search = os.path.expanduser("~/.local/bin") + os.pathsep + os.environ.get("PATH", "")
+        for name in ("woollamad", "woollama-server"):
+            p = shutil.which(name, path=search)
+            if p:
+                return p
+        fallback = os.path.expanduser("~/.local/bin/woollamad")
+        return fallback if os.path.exists(fallback) else None
+
+    def ensure_serve(self, bin=None, wait=25):
+        """Own a woollama instance. **Discover-first:** if one is already reachable
+        (a running `woollama.service`, or any user-launched woollamad), attach to it
+        and return. Otherwise spawn a **keyless** woollamad and wait for its socket.
+        Keyless on purpose — an auto-spawned owner instance must not hold a billed
+        `ANTHROPIC_API_KEY` (cloud still works when the *discovered* instance has one).
+        Returns True if woollama is reachable afterward. Mirrors
+        `FabricClient.ensure_serve` but never spawns when one is already up."""
+        if self.alive():
+            return True
+        exe = self._locate_woollamad(bin)
+        if not exe:
+            self.log("woollama not running and no woollamad binary found "
+                     "(set [woollama].bin or install woollamad); leaving inference to fabric")
+            return False
+        env = dict(os.environ)
+        env["PATH"] = os.path.expanduser("~/.local/bin") + os.pathsep + env.get("PATH", "")
+        env.pop("ANTHROPIC_API_KEY", None)  # keyless owner instance (budget)
+        self.log(f"woollama not up; starting {exe} (keyless)")
+        try:
+            subprocess.Popen([exe], env=env, start_new_session=True,
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception as e:
+            self.log(f"failed to spawn woollamad: {e}")
+            return False
+        for _ in range(wait * 2):
+            # the socket/.addr didn't exist at construction; re-resolve as it appears.
+            self._transport = resolve_woollama_transport(self._address)
+            if self.alive():
+                self.log("woollama is up")
+                return True
+            time.sleep(0.5)
+        self.log("woollama did not come up in time")
+        return False
 
     def list_models(self, timeout=5):
         """GET /v1/models → the router's addressable model ids (e.g.
