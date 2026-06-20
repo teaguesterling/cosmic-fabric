@@ -691,6 +691,60 @@ class WoollamaClient:
             conn.close()
         return d.get("prompt", "")
 
+    def _run_pattern_request(self, pattern, input_text, variables, model, options, stream, timeout):
+        from urllib.parse import quote
+        body = {"input": input_text or "", "stream": bool(stream)}
+        if variables:
+            body["variables"] = variables
+        if model:
+            body["model"] = model
+        if options:
+            body["options"] = options
+        conn = self._connect(timeout)
+        conn.request("POST", f"/w1/patterns/{quote(pattern, safe='')}/run",
+                     body=json.dumps(body).encode(),
+                     headers={"Content-Type": "application/json"})
+        return conn
+
+    def run_pattern(self, pattern, input_text, variables=None, model=None, options=None, timeout=600):
+        """POST /w1/patterns/<name>/run → the assistant's text. woollama renders the
+        pattern (system + {{vars}}) and infers; `model` overrides the recipe's
+        inferencer per call. woollama owns the templating (its /w1 namespace)."""
+        conn = self._run_pattern_request(pattern, input_text, variables, model, options, False, timeout)
+        try:
+            raw = conn.getresponse().read()
+            d = json.loads(raw)
+        finally:
+            conn.close()
+        return ((d.get("choices") or [{}])[0].get("message") or {}).get("content", "").strip()
+
+    def run_pattern_stream(self, pattern, input_text, on_chunk=None, variables=None,
+                           model=None, options=None, timeout=600):
+        """POST /w1/patterns/<name>/run (stream:true) → accumulated text, calling
+        `on_chunk` with each OpenAI SSE delta."""
+        conn = self._run_pattern_request(pattern, input_text, variables, model, options, True, timeout)
+        out = []
+        try:
+            for raw in conn.getresponse():
+                line = raw.decode("utf-8", "replace").strip()
+                if not line or not line.startswith("data:"):
+                    continue
+                line = line[5:].strip()
+                if line == "[DONE]":
+                    break
+                try:
+                    ev = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                delta = ((ev.get("choices") or [{}])[0].get("delta") or {}).get("content")
+                if delta:
+                    out.append(delta)
+                    if on_chunk:
+                        on_chunk(delta)
+        finally:
+            conn.close()
+        return "".join(out).strip()
+
     def _body(self, model, prompt, options, stream):
         body = {
             "model": model,

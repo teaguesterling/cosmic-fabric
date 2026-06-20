@@ -89,6 +89,19 @@ class MockWoollama(unittest.TestCase):
         self.assertIn("tone=dry", prompt)  # variables reached woollama
         self.assertIn("BODY-1", prompt)
 
+    def test_run_pattern(self):  # POST /w1/patterns/<name>/run
+        out = core.WoollamaClient().run_pattern(
+            "echo-pattern", "RUN-1", variables={"tone": "dry"}, model="ollama/mock-model")
+        self.assertIn("echo-pattern", out)
+        self.assertIn("RUN-1", out)
+
+    def test_run_pattern_stream(self):
+        chunks = []
+        out = core.WoollamaClient().run_pattern_stream(
+            "echo-pattern", "STREAMRUN", on_chunk=chunks.append)
+        self.assertIn("STREAMRUN", out)
+        self.assertGreaterEqual(len(chunks), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
