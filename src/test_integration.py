@@ -79,6 +79,16 @@ class MockWoollama(unittest.TestCase):
         self.assertEqual(out, "STREAM-XYZ")
         self.assertGreaterEqual(len(chunks), 1)
 
+    def test_list_patterns(self):  # GET /w1/patterns
+        self.assertIn("echo-pattern", core.WoollamaClient().list_patterns())
+
+    def test_render(self):  # POST /w1/patterns/<name>/render — woollama owns templating
+        prompt = core.WoollamaClient().render(
+            "echo-pattern", "BODY-1", variables={"tone": "dry"})
+        self.assertIn("echo-pattern", prompt)
+        self.assertIn("tone=dry", prompt)  # variables reached woollama
+        self.assertIn("BODY-1", prompt)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -655,6 +655,42 @@ class WoollamaClient:
             conn.close()
         return [m["id"] for m in d.get("data", []) if m.get("id")]
 
+    def list_patterns(self, timeout=5):
+        """GET /w1/patterns → the pattern names woollama exposes (fabric-sourced +
+        recipes). woollama's own `/w1` namespace (templating is not OpenAI, so it
+        lives off `/v1`). Raises if no server."""
+        conn = self._connect(timeout)
+        try:
+            conn.request("GET", "/w1/patterns")
+            d = json.load(conn.getresponse())
+        finally:
+            conn.close()
+        return [p["name"] for p in d.get("data", [])
+                if isinstance(p, dict) and p.get("name")]
+
+    def render(self, pattern, input_text, variables=None, timeout=30):
+        """POST /w1/patterns/<name>/render → the rendered prompt (system + {{vars}}
+        substituted + input), no model run — woollama owns the templating. For the
+        `assemble` op (prompt preview / agent hand-off)."""
+        from urllib.parse import quote
+        body = {"input": input_text or ""}
+        if variables:
+            body["variables"] = variables
+        conn = self._connect(timeout)
+        try:
+            conn.request("POST", f"/w1/patterns/{quote(pattern, safe='')}/render",
+                         body=json.dumps(body).encode(),
+                         headers={"Content-Type": "application/json"})
+            resp = conn.getresponse()
+            raw = resp.read()
+            if resp.status >= 400:
+                raise RuntimeError(
+                    f"woollama /w1 render {resp.status}: {raw[:200].decode('utf-8', 'replace')}")
+            d = json.loads(raw)
+        finally:
+            conn.close()
+        return d.get("prompt", "")
+
     def _body(self, model, prompt, options, stream):
         body = {
             "model": model,
