@@ -27,8 +27,6 @@ sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import core  # noqa: E402
 
 LOG = os.path.expanduser("~/.cache/cosmic-fabric/daemon.log")
-_pat_cache = None
-_lock = threading.Lock()
 FAB = None
 
 # Result broker: subscribers (e.g. the panel) register a queue; a run with
@@ -197,11 +195,10 @@ def handle(req):
         # want raw fabric — most callers should use the ops above instead.
         return {"url": FAB.url}
     if op == "patterns":
-        global _pat_cache
-        with _lock:
-            if _pat_cache is None:
-                _pat_cache = _pattern_names(core.load_policy())
-        return {"patterns": _pat_cache}
+        # Computed live (not cached): woollama's /w1 list can change as its managed
+        # fabric hot-reloads or comes up after the daemon, and a stale once-filled
+        # cache would also diverge from the live `surface` op below.
+        return {"patterns": _pattern_names(core.load_policy())}
     if op == "models":
         return {"models": FAB.list_models(), "vendors": FAB.model_catalog()}
     if op == "woollama_models":
@@ -449,39 +446,49 @@ def stream_run(req, send):
             send({"done": True, **done})
         return
 
-    # woollama inference seam (slice 1): plain, session-less streaming runs go
-    # through the router (fabric assembles → woollama streams). A live-server
-    # pre-check means 'no server' falls back cleanly before any chunk is sent;
-    # a mid-stream failure surfaces as an error rather than double-streaming.
+    # woollama inference seam: plain, session-less streaming runs render+stream on
+    # woollama's /w1 (it owns templating). The live-server pre-check AND a failure
+    # before any chunk is emitted both fall back to fabric; only a failure AFTER
+    # chunks have streamed surfaces as an error (a partial stream can't be un-sent).
     backend = "fabric"
+    out = None
     wool = (core.WoollamaClient(address=(pol.get("woollama") or {}).get("address"), log=log)
             if (core.woollama_enabled(pol) and _woollama_eligible(req) and not session)
             else None)
     if wool is not None and wool.alive():
+        sent = 0
+
+        def on_wchunk(c):
+            nonlocal sent
+            sent += 1
+            on_chunk(c)
         try:
             wmodel = core.woollama_model(model, vendor)
-            opts = core.to_openai_options(inst)
+            wopts = core.to_openai_options(inst)  # NB: distinct from fabric's `opts` below
             # A recipe owns its prompt → stream it raw on /v1. A plain pattern is
-            # rendered + streamed by woollama on /w1 (it owns templating now; no
-            # fabric prompt assembly here).
+            # rendered + streamed by woollama on /w1 (no fabric prompt assembly).
             is_recipe = (vendor or "").lower() == "woollama"
             if pat and not is_recipe:
-                out = wool.run_pattern_stream(pat, inp, on_chunk=on_chunk,
+                out = wool.run_pattern_stream(pat, inp, on_chunk=on_wchunk,
                                               variables=req.get("variables"),
-                                              model=wmodel, options=opts)
+                                              model=wmodel, options=wopts)
                 log(f"run-stream via woollama /w1 pattern={pat} model={wmodel} → {len(out)}ch")
             else:
-                out = wool.chat_stream(wmodel, inp, on_chunk=on_chunk, options=opts)
+                out = wool.chat_stream(wmodel, inp, on_chunk=on_wchunk, options=wopts)
                 log(f"run-stream via woollama chat model={wmodel} recipe={is_recipe} → {len(out)}ch")
             backend = "woollama"
         except Exception as e:
-            log(f"run-stream woollama error: {e}")
-            (broadcast if bcast else send)({"event": "error", "error": str(e)} if bcast else {"error": str(e)})
-            return
-    else:
-        if wool is not None:
-            log("woollama enabled but no server discoverable; falling back to fabric")
-        out = None
+            if sent:  # a partial stream already went out — can't safely retry on fabric
+                log(f"run-stream woollama error after {sent} chunks: {e}")
+                (broadcast if bcast else send)(
+                    {"event": "error", "error": str(e)} if bcast else {"error": str(e)})
+                return
+            log(f"woollama stream failed before any chunk ({e}); falling back to fabric")
+            out = None  # fall through to the fabric path below
+    elif wool is not None:
+        log("woollama enabled but no server discoverable; falling back to fabric")
+
+    if out is None:
         # Local/ollama stateful chat through woollama (conv-7 store-backed): drive
         # the conversation by our own session key (attach-by-key) when woollama has
         # a conversation store wired. Degrades cleanly — if woollama is down or has

@@ -398,7 +398,6 @@ class DaemonWoollamaReroute(unittest.TestCase):
         self.mod = _load_daemon()
         self.mod.FAB = _NoFabric()
         self.mod.log = lambda *a, **k: None
-        self.mod._pat_cache = None
 
     def tearDown(self):
         for attr in ("_lp", "_patch"):
@@ -462,6 +461,40 @@ class DaemonWoollamaReroute(unittest.TestCase):
         self.assertIn("echo-pattern", joined)   # pattern reached /w1/run (stream)
         self.assertIn("STREAM-X", joined)        # input reached /w1
         self.assertTrue(done and done[0].get("backend") == "woollama")
+
+    def test_sync_run_falls_back_on_woollama_error(self):
+        # woollama errors (HTTP 500) on /w1/run → run_pattern raises → _woollama_sync
+        # returns None, so the run op falls back to fabric (not a silent empty result).
+        out = self.mod._woollama_sync(
+            copy.deepcopy(self.POL), "err-pattern", "X", "qwen", "ollama", {}, None)
+        self.assertIsNone(out)
+
+    def test_stream_run_falls_back_to_fabric_pre_chunk(self):
+        # woollama errors before any chunk → stream falls back to fabric rather than
+        # erroring out (parity with the sync path); FAB serves it instead.
+        class _FakeFabric:
+            def run(self, pat, inp, model, vendor, variables, opts, on_chunk=None, **kw):
+                out = f"FABRIC[{pat}]:{inp}"
+                if on_chunk:
+                    on_chunk(out)
+                return out
+        self.mod.FAB = _FakeFabric()
+        chunks, done, errors = [], [], []
+
+        def send(msg):
+            if "chunk" in msg:
+                chunks.append(msg["chunk"])
+            if msg.get("done"):
+                done.append(msg)
+            if "error" in msg:
+                errors.append(msg)
+
+        self.mod.stream_run(
+            {"op": "run", "stream": True, "pattern": "err-pattern",
+             "input": "S", "model": "qwen", "vendor": "x"}, send)
+        self.assertIn("FABRIC[err-pattern]:S", "".join(chunks))  # fabric served it
+        self.assertFalse(errors)                                  # no hard error to the client
+        self.assertTrue(done and done[0].get("backend") == "fabric")
 
 
 if __name__ == "__main__":
