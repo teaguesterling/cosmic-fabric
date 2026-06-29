@@ -8,9 +8,15 @@ Two daemons, two classes:
   - `RealWoollama` — the REAL `woollamad` binary with a native templated recipe
     and (when fabric is installed) a managed `fabric --serve`; asserts real model
     output. Skipped unless a woollamad binary AND a reachable ollama are present.
+  - `DaemonWoollamaReroute` — drives the `cosmic-fabricd` daemon's own ops
+    (`run`/`assemble`/`patterns`) against the mock with `FAB` stubbed to raise,
+    proving Phase B routes templating through woollama's `/w1` and never touches
+    fabric on the woollama path.
 
 Run: `python3 -m unittest test_integration`.
 """
+import copy
+import importlib.util
 import json
 import os
 import shutil
@@ -27,6 +33,26 @@ import core  # noqa: E402
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 MOCK = os.path.join(HERE, "mock-woollamad")
+
+
+def _load_daemon():
+    """Import the hyphen-named, extensionless `cosmic-fabricd` script as a module
+    (an explicit SourceFileLoader, since importlib can't infer one without a .py).
+    Module-level code only defines things (`FAB` stays None until main()), safe."""
+    import importlib.machinery
+    path = os.path.join(HERE, "cosmic-fabricd")
+    loader = importlib.machinery.SourceFileLoader("cosmic_fabricd", path)
+    spec = importlib.util.spec_from_loader("cosmic_fabricd", loader)
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    return mod
+
+
+class _NoFabric:
+    """A FAB stand-in that fails loudly if the daemon touches fabric — the proof
+    that the woollama `/w1` path is fabric-free."""
+    def __getattr__(self, name):
+        raise AssertionError(f"fabric must not be touched on the woollama path (.{name})")
 
 # --- Real-daemon integration (complement to the mock) -----------------------
 # The REAL woollamad binary: prefer an explicit WOOLLAMAD_BIN (point it at a
@@ -330,6 +356,112 @@ class RealWoollama(unittest.TestCase):
             "ai", "Say hello.", on_chunk=chunks.append, model=self.model)
         self.assertTrue(out.strip())
         self.assertGreaterEqual(len(chunks), 1)
+
+
+class DaemonWoollamaReroute(unittest.TestCase):
+    """Phase B: the `cosmic-fabricd` daemon routes pattern templating through
+    woollama's `/w1` and never touches fabric on that path. `FAB` is stubbed to
+    raise on any access, so a stray fabric call fails the test; the mock runs in
+    echo mode so we can assert the pattern + variables + input reached `/w1`."""
+
+    POL = {
+        "default": {"model": "echo-model", "vendor": "x", "extra": []},
+        "patterns": {}, "output": {"mode": "notify"},
+        "ollama": {"bin": "", "url": "http://127.0.0.1:11434", "warn_below_gpu": 99},
+        "surface": {"include": [], "exclude": []},
+        "models": {}, "tools": {},
+        "woollama": {"enabled": True, "address": None, "bin": None},
+    }
+
+    def setUp(self):
+        self.rt = tempfile.mkdtemp()
+        env = dict(os.environ, XDG_RUNTIME_DIR=self.rt)
+        env.pop("COSMIC_FABRIC_WOOLLAMA_ADDRESS", None)
+        self.proc = subprocess.Popen(
+            [sys.executable, MOCK, "--echo"], env=env,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        sock = os.path.join(self.rt, "woollama.sock")
+        ready = False
+        for _ in range(50):
+            if os.path.exists(sock) and core.WoollamaClient(transport=("unix", sock)).alive():
+                ready = True
+                break
+            time.sleep(0.1)
+        if not ready:
+            self.tearDown()
+            self.skipTest("mock-woollamad did not come up")
+        self._patch = patch.dict(os.environ, {"XDG_RUNTIME_DIR": self.rt}, clear=False)
+        self._patch.start()
+        os.environ.pop("COSMIC_FABRIC_WOOLLAMA_ADDRESS", None)
+        self._lp = patch.object(core, "load_policy", lambda: copy.deepcopy(self.POL))
+        self._lp.start()
+        self.mod = _load_daemon()
+        self.mod.FAB = _NoFabric()
+        self.mod.log = lambda *a, **k: None
+        self.mod._pat_cache = None
+
+    def tearDown(self):
+        for attr in ("_lp", "_patch"):
+            obj = getattr(self, attr, None)
+            if obj is not None:
+                try:
+                    obj.stop()
+                except (AttributeError, RuntimeError):
+                    pass
+        if getattr(self, "proc", None):
+            self.proc.terminate()
+            try:
+                self.proc.wait(timeout=5)
+            except Exception:
+                self.proc.kill()
+        shutil.rmtree(self.rt, ignore_errors=True)
+
+    def test_sync_run_routes_to_w1_not_fabric(self):
+        # A plain pattern → /w1/run (woollama renders + infers); FAB stub untouched.
+        out = self.mod._woollama_sync(
+            copy.deepcopy(self.POL), "echo-pattern", "RUN-X",
+            "qwen", "ollama", {}, {"tone": "dry"})
+        self.assertIsNotNone(out)           # woollama handled it (None == fabric fallback)
+        self.assertIn("echo-pattern", out)  # the pattern name reached /w1/run
+        self.assertIn("tone=dry", out)      # variables reached /w1
+        self.assertIn("RUN-X", out)         # the input reached /w1
+
+    def test_recipe_run_uses_chat_not_w1(self):
+        # vendor==woollama → recipe owns its prompt → /v1 chat (echo == raw input),
+        # no fabric pattern stacked on top.
+        out = self.mod._woollama_sync(
+            copy.deepcopy(self.POL), "ignored-pat", "RAW-Y",
+            "cc-assistant", "woollama", {}, None)
+        self.assertEqual(out, "RAW-Y")
+
+    def test_assemble_op_renders_via_w1(self):
+        r = self.mod.handle({"op": "assemble", "pattern": "echo-pattern",
+                             "input": "ASM-X", "variables": {"tone": "dry"}})
+        self.assertIn("prompt", r)
+        self.assertIn("echo-pattern", r["prompt"])
+        self.assertIn("tone=dry", r["prompt"])
+        self.assertIn("ASM-X", r["prompt"])
+
+    def test_patterns_op_sources_from_w1(self):
+        r = self.mod.handle({"op": "patterns"})
+        self.assertIn("echo-pattern", r.get("patterns", []))
+
+    def test_stream_run_routes_to_w1(self):
+        chunks, done = [], []
+
+        def send(msg):
+            if "chunk" in msg:
+                chunks.append(msg["chunk"])
+            if msg.get("done"):
+                done.append(msg)
+
+        self.mod.stream_run(
+            {"op": "run", "stream": True, "pattern": "echo-pattern",
+             "input": "STREAM-X", "model": "qwen", "vendor": "x"}, send)
+        joined = "".join(chunks)
+        self.assertIn("echo-pattern", joined)   # pattern reached /w1/run (stream)
+        self.assertIn("STREAM-X", joined)        # input reached /w1
+        self.assertTrue(done and done[0].get("backend") == "woollama")
 
 
 if __name__ == "__main__":
