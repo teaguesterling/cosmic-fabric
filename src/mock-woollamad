@@ -117,6 +117,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         # /w1/patterns/<name>/<render|run> — make pattern+variables assertable.
         rest = self.path[len("/w1/patterns/"):]
         name, _, op = rest.partition("/")
+        if name.startswith("err"):  # test sentinel: simulate a woollama-side run/render error
+            self._json({"error": "simulated woollama error"}, 500)
+            return
         inp = body.get("input", "") or ""
         variables = body.get("variables") or {}
         vstr = " ".join(f"{k}={v}" for k, v in sorted(variables.items()))

@@ -712,7 +712,11 @@ class WoollamaClient:
         inferencer per call. woollama owns the templating (its /w1 namespace)."""
         conn = self._run_pattern_request(pattern, input_text, variables, model, options, False, timeout)
         try:
-            raw = conn.getresponse().read()
+            resp = conn.getresponse()
+            raw = resp.read()
+            if resp.status >= 400:  # surface errors (e.g. unknown pattern) so callers can fall back
+                raise RuntimeError(
+                    f"woollama /w1 run {resp.status}: {raw[:200].decode('utf-8', 'replace')}")
             d = json.loads(raw)
         finally:
             conn.close()
@@ -725,7 +729,11 @@ class WoollamaClient:
         conn = self._run_pattern_request(pattern, input_text, variables, model, options, True, timeout)
         out = []
         try:
-            for raw in conn.getresponse():
+            resp = conn.getresponse()
+            if resp.status >= 400:  # error body isn't SSE; surface it before streaming
+                raise RuntimeError(
+                    f"woollama /w1 run {resp.status}: {resp.read()[:200].decode('utf-8', 'replace')}")
+            for raw in resp:
                 line = raw.decode("utf-8", "replace").strip()
                 if not line or not line.startswith("data:"):
                     continue
