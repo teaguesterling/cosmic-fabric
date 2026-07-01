@@ -88,34 +88,33 @@ def _woollama_extra(req):
 
 
 def _woollama_sync(pol, pat, inp, model, vendor, inst, variables, extra=None):
-    """Run the plain inference path through woollama. Returns the output text, or
-    None to signal 'unavailable' (disabled / no server / error) — the caller turns
-    that into an error (woollama is the backend; there's no fabric fallback)."""
+    """Run the plain inference path through woollama. Returns the output text.
+    Returns None ONLY when woollama is unavailable (disabled / not reachable) — the
+    caller turns that into a 'backend unavailable' error. A request-level failure
+    (woollama is up but rejects the run — bad model, unknown pattern, HTTP 5xx)
+    raises, so the caller surfaces the real error (matching the streaming path)."""
     if not core.woollama_enabled(pol):
         return None
     wool = core.WoollamaClient(address=(pol.get("woollama") or {}).get("address"), log=log)
     if not wool.alive():
         log("woollama enabled but not reachable")
         return None
-    try:
-        wmodel = core.woollama_model(model, vendor)
-        opts = core.to_openai_options(inst)
-        # A recipe (woollama/<recipe>) owns its prompt, so there's nothing to
-        # template — infer it directly on /v1. A plain pattern, though, is
-        # rendered AND inferred by woollama on /w1 (it owns the templating now;
-        # cosmic-fabric no longer assembles the prompt via fabric).
-        is_recipe = (vendor or "").lower() == "woollama"
-        if pat and not is_recipe:
-            out = wool.run_pattern(pat, inp, variables=variables, model=wmodel,
-                                   options=opts, extra=extra)
-            log(f"run via woollama /w1 pattern={pat} model={wmodel} → {len(out)}ch")
-        else:
-            out = wool.chat(wmodel, inp, opts)  # recipe owns its prompt, or no pattern → raw
-            log(f"run via woollama chat model={wmodel} recipe={is_recipe} → {len(out)}ch")
-        return out
-    except Exception as e:
-        log(f"woollama path failed ({e})")
-        return None
+    wmodel = core.woollama_model(model, vendor)
+    opts = core.to_openai_options(inst)
+    # A recipe (woollama/<recipe>) owns its prompt, so there's nothing to template —
+    # infer it directly on /v1. A plain pattern, though, is rendered AND inferred by
+    # woollama on /w1 (it owns the templating; no fabric prompt assembly).
+    is_recipe = (vendor or "").lower() == "woollama"
+    if pat and not is_recipe:
+        if (vendor or "").lower() == "ollama":  # size the ctx for long inputs (woollama → ollama num_ctx)
+            opts = {**opts, "num_ctx": inst.get("ctx") or core.pick_ctx(inp)}
+        out = wool.run_pattern(pat, inp, variables=variables, model=wmodel,
+                               options=opts, extra=extra)
+        log(f"run via woollama /w1 pattern={pat} model={wmodel} → {len(out)}ch")
+    else:
+        out = wool.chat(wmodel, inp, opts)  # recipe owns its prompt, or no pattern → raw
+        log(f"run via woollama chat model={wmodel} recipe={is_recipe} → {len(out)}ch")
+    return out
 
 
 def _pattern_names(pol):
@@ -345,11 +344,16 @@ def handle(req):
             return {"output": out, "model": model, "vendor": vendor, "placement": pct,
                     "warn_below": pol["ollama"].get("warn_below_gpu", 99), "capability": "vision"}
         is_ollama = (vendor or "").lower() == "ollama"
-        # woollama is the text backend: it renders+infers on /w1 (forwarding
-        # fabric's advanced fields to its own managed fabric). No fabric fallback —
-        # if woollama is unavailable the run errors (it self-heals via ensure_serve).
-        wout = _woollama_sync(pol, pat, inp, model, vendor, inst,
-                              req.get("variables"), _woollama_extra(req))
+        # woollama is the text backend: it renders+infers on /w1 (forwarding fabric's
+        # advanced fields to its own managed fabric). No fabric fallback — an
+        # unreachable woollama errors ('unavailable'); a request-level rejection
+        # surfaces its real error (raised from _woollama_sync).
+        try:
+            wout = _woollama_sync(pol, pat, inp, model, vendor, inst,
+                                  req.get("variables"), _woollama_extra(req))
+        except Exception as e:
+            log(f"run failed (woollama rejected): {e}")
+            return {"error": str(e)}
         if wout is None:
             log(f"run failed: woollama unavailable (pattern={pat} model={model})")
             return {"error": "woollama backend unavailable (required for text runs)"}
@@ -472,7 +476,8 @@ def stream_run(req, send):
 
     # woollama inference seam: plain, session-less streaming runs render+stream on
     # woollama's /w1 (it owns templating). woollama is the backend — any failure is
-    # an error to the client (no fabric fallback; it self-heals via ensure_serve).
+    # an error to the client (no fabric fallback; woollama runs as a systemd unit and
+    # is (re)spawned at daemon start via ensure_serve).
     backend = "woollama"
     out = None
     wool = (core.WoollamaClient(address=(pol.get("woollama") or {}).get("address"), log=log)
@@ -487,11 +492,13 @@ def stream_run(req, send):
             on_chunk(c)
         try:
             wmodel = core.woollama_model(model, vendor)
-            wopts = core.to_openai_options(inst)  # NB: distinct from fabric's `opts` below
+            wopts = core.to_openai_options(inst)
             # A recipe owns its prompt → stream it raw on /v1. A plain pattern is
             # rendered + streamed by woollama on /w1 (no fabric prompt assembly).
             is_recipe = (vendor or "").lower() == "woollama"
             if pat and not is_recipe:
+                if (vendor or "").lower() == "ollama":  # ctx sizing for long inputs
+                    wopts = {**wopts, "num_ctx": inst.get("ctx") or core.pick_ctx(inp)}
                 out = wool.run_pattern_stream(pat, inp, on_chunk=on_wchunk,
                                               variables=req.get("variables"),
                                               model=wmodel, options=wopts,
@@ -620,7 +627,10 @@ def main():
     if os.path.exists(path):
         try:
             t = socket.socket(socket.AF_UNIX)
-            t.settimeout(1)
+            # Generous timeout: a live daemon's ping now does a woollama reachability
+            # probe (up to ~2s), so a too-short read would misread "slow" as "stale"
+            # and steal the socket, splitting into two daemons.
+            t.settimeout(6)
             t.connect(path)
             t.sendall(b'{"op":"ping"}\n')
             t.recv(64)

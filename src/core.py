@@ -877,8 +877,9 @@ def woollama_model(model, vendor):
 def woollama_status(pol):
     """Observability snapshot of the inference seam, for the `status` op / panel:
     whether routing is enabled, whether a server is reachable, the resolved
-    endpoint (unix:… or http://…), and which backend a plain eligible run uses
-    *right now* — woollama only when both enabled and reachable, else fabric."""
+    endpoint (unix:… or http://…), and which backend a plain run uses *right now* —
+    `woollama` when enabled+reachable, else `none` (fabric --serve is no longer run,
+    so there is no fallback text backend)."""
     enabled = woollama_enabled(pol)
     client = WoollamaClient(address=(pol.get("woollama") or {}).get("address"))
     reachable = client.alive()
@@ -886,7 +887,7 @@ def woollama_status(pol):
         "enabled": enabled,
         "reachable": reachable,
         "endpoint": client.url,
-        "active_backend": "woollama" if (enabled and reachable) else "fabric",
+        "active_backend": "woollama" if (enabled and reachable) else "none",
     }
 
 

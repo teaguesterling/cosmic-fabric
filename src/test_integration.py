@@ -488,21 +488,28 @@ class DaemonWoollamaReroute(unittest.TestCase):
         for token in ("context=myctx", "strategy=cot", "language=fr", "search=True"):
             self.assertIn(token, out)
 
-    def test_sync_run_returns_none_on_woollama_error(self):
-        # woollama errors (HTTP 500) on /w1/run → run_pattern raises → _woollama_sync
-        # returns None (signals unavailable; the run op turns that into an error —
-        # there is no fabric fallback). FAB (stubbed to raise) is never touched.
-        out = self.mod._woollama_sync(
-            copy.deepcopy(self.POL), "err-pattern", "X", "qwen", "ollama", {}, None)
-        self.assertIsNone(out)
+    def test_sync_run_raises_on_woollama_request_error(self):
+        # woollama is up but rejects the run (HTTP 500) → _woollama_sync raises (it
+        # does NOT collapse to None), so the run op can surface the REAL error.
+        with self.assertRaises(Exception):
+            self.mod._woollama_sync(
+                copy.deepcopy(self.POL), "err-pattern", "X", "qwen", "ollama", {}, None)
 
-    def test_run_op_errors_when_woollama_unavailable(self):
-        # No fabric fallback: a woollama failure surfaces as an error, not fabric
-        # output (FAB is the raising stub, so any fabric call would fail the test).
+    def test_sync_run_returns_none_when_woollama_disabled(self):
+        # Disabled → None (the caller renders 'backend unavailable'), no raise.
+        pol = copy.deepcopy(self.POL)
+        pol["woollama"]["enabled"] = False
+        self.assertIsNone(
+            self.mod._woollama_sync(pol, "echo-pattern", "X", "qwen", "ollama", {}, None))
+
+    def test_run_op_surfaces_real_woollama_error(self):
+        # A request-level woollama error is surfaced verbatim (not a generic
+        # 'unavailable'), and never falls back to fabric (FAB stub would raise).
         r = self.mod.handle({"op": "run", "pattern": "err-pattern",
-                             "input": "X", "model": "qwen", "vendor": "x"})
+                             "input": "X", "model": "qwen", "vendor": "ollama"})
         self.assertIn("error", r)
         self.assertNotIn("output", r)
+        self.assertIn("500", r["error"])  # the real /w1 error, not "unavailable"
 
     def test_stream_run_errors_on_woollama_failure_no_fabric(self):
         # woollama errors → the stream reports an error (no fabric fallback). FAB is
