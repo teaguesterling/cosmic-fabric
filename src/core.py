@@ -26,10 +26,11 @@ def load_policy():
         "surface": {"include": [], "exclude": []},
         "models": {},
         "tools": {},   # decision 5: [tools.<name>] sections (allow_domains, roots, …)
-        # woollama inference seam: when enabled, plain (non-tool, non-image) runs
-        # route their inference through the woollama router — fabric assembles the
-        # prompt, woollama infers. Off by default; fabric stays the fallback.
-        "woollama": {"enabled": False, "address": None, "bin": None},
+        # woollama is the text backend: plain (non-tool, non-image) runs render +
+        # infer on woollama's /w1 (which owns its managed fabric). On by default —
+        # fabric --serve is no longer spawned; the fabric binary is kept only for
+        # vision (`run_image`). Set enabled=false only to hard-disable routing.
+        "woollama": {"enabled": True, "address": None, "bin": None},
     }
     try:
         import tomllib

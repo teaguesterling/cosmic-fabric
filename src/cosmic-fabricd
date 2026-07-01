@@ -89,12 +89,13 @@ def _woollama_extra(req):
 
 def _woollama_sync(pol, pat, inp, model, vendor, inst, variables, extra=None):
     """Run the plain inference path through woollama. Returns the output text, or
-    None to mean 'fall back to fabric' (disabled / no server / error)."""
+    None to signal 'unavailable' (disabled / no server / error) — the caller turns
+    that into an error (woollama is the backend; there's no fabric fallback)."""
     if not core.woollama_enabled(pol):
         return None
     wool = core.WoollamaClient(address=(pol.get("woollama") or {}).get("address"), log=log)
     if not wool.alive():
-        log("woollama enabled but no server discoverable; falling back to fabric")
+        log("woollama enabled but not reachable")
         return None
     try:
         wmodel = core.woollama_model(model, vendor)
@@ -113,22 +114,22 @@ def _woollama_sync(pol, pat, inp, model, vendor, inst, variables, extra=None):
             log(f"run via woollama chat model={wmodel} recipe={is_recipe} → {len(out)}ch")
         return out
     except Exception as e:
-        log(f"woollama path failed ({e}); falling back to fabric")
+        log(f"woollama path failed ({e})")
         return None
 
 
 def _pattern_names(pol):
-    """Pattern names from woollama's `/w1/patterns` — the source of truth when
-    woollama is enabled+alive (its managed fabric serves the same library plus any
-    recipes) — falling back to fabric's own list when woollama is off/unreachable."""
+    """Pattern names from woollama's `/w1/patterns` (its managed fabric serves the
+    library plus any recipes). woollama is the source now — empty list if it's
+    off/unreachable, no fabric fallback."""
     if core.woollama_enabled(pol):
         wool = core.WoollamaClient(address=(pol.get("woollama") or {}).get("address"), log=log)
         if wool.alive():
             try:
                 return wool.list_patterns()
             except Exception as e:
-                log(f"woollama list_patterns failed ({e}); falling back to fabric")
-    return FAB.list_patterns()
+                log(f"woollama list_patterns failed ({e})")
+    return []  # woollama is the pattern source now; no fabric fallback
 
 
 def _woollama_catalog(pol):
@@ -139,7 +140,7 @@ def _woollama_catalog(pol):
     `woollama/<name>` namespace (recipes + the fabric pattern library, addressable
     as models) is excluded — those are patterns, not inference models, and belong in
     the pattern picker, not the model picker. Returns None when woollama is
-    off/unreachable so the caller falls back to fabric's catalog. (Cloud providers
+    off/unreachable (the caller then yields an empty catalog). (Cloud providers
     woollama doesn't yet enumerate in /v1/models are absent here — see woollama #3;
     they still route by id, matching the Run-tab picker's existing behavior.)"""
     if not core.woollama_enabled(pol):
@@ -210,7 +211,8 @@ def sock_path():
 def handle(req):
     op = req.get("op")
     if op == "ping":
-        return {"ok": True, "serve": FAB.alive()}
+        # `serve` = backend (woollama) reachability; fabric --serve is no longer run.
+        return {"ok": True, "serve": core.woollama_status(core.load_policy()).get("reachable", False)}
     if op == "tool_confirm":
         # Side-channel ack from the panel: a tool-loop thread is blocked on
         # the matching event. Look it up, set approved, signal.
@@ -225,21 +227,20 @@ def handle(req):
         log(f"tool_confirm id={rid} approved={approved}")
         return {"ok": True}
     if op == "fabric_url":
-        # The live fabric REST base URL (loopback). Escape hatch for tools that
-        # want raw fabric — most callers should use the ops above instead.
-        return {"url": FAB.url}
+        # Deprecated: cosmic-fabric no longer runs its own `fabric --serve` — fabric
+        # lives behind woollama (reachable via woollama's `/fabric/*` proxy). No
+        # direct fabric URL to hand out.
+        return {"url": "", "note": "fabric runs behind woollama; use its /fabric/* proxy"}
     if op == "patterns":
         # Computed live (not cached): woollama's /w1 list can change as its managed
         # fabric hot-reloads or comes up after the daemon, and a stale once-filled
         # cache would also diverge from the live `surface` op below.
         return {"patterns": _pattern_names(core.load_policy())}
     if op == "models":
-        # The per-pattern model picker, now sourced from woollama (unifying it with
-        # the Run-tab `woollama_models` picker); fabric's catalog is the fallback.
+        # The per-pattern model picker, sourced from woollama (unified with the
+        # Run-tab `woollama_models` picker). Empty catalog if woollama is unreachable.
         cat = _woollama_catalog(core.load_policy())
-        if cat is not None:
-            return cat
-        return {"models": FAB.list_models(), "vendors": FAB.model_catalog()}
+        return cat if cat is not None else {"models": [], "vendors": {}}
     if op == "woollama_models":
         # The router's addressable models, for the Run-tab per-run model picker.
         pol = core.load_policy()
@@ -255,7 +256,7 @@ def handle(req):
             return {"error": "missing pattern"}
         pol = core.load_policy()
         inp, variables = req.get("input", ""), req.get("variables")
-        # woollama owns templating: render on /w1; fall back to fabric assembly.
+        # woollama owns templating: render on /w1 (no fabric fallback).
         if core.woollama_enabled(pol):
             wool = core.WoollamaClient(address=(pol.get("woollama") or {}).get("address"), log=log)
             if wool.alive():
@@ -264,14 +265,9 @@ def handle(req):
                     log(f"assemble via woollama /w1 pattern={pat} → {len(prompt)} chars")
                     return {"prompt": prompt}
                 except Exception as e:
-                    log(f"woollama render failed ({e}); falling back to fabric")
-        try:
-            prompt = FAB.assemble_prompt(pat, inp, variables)
-        except Exception as e:
-            log(f"assemble error: {e}")
-            return {"error": str(e)}
-        log(f"assemble pattern={pat} → {len(prompt)} chars")
-        return {"prompt": prompt}
+                    log(f"assemble error: {e}")
+                    return {"error": str(e)}
+        return {"error": "woollama backend unavailable (required to render patterns)"}
     if op == "surface":
         pol = core.load_policy()
         return {"active": core.active_patterns(pol, _pattern_names(pol))}
@@ -290,12 +286,13 @@ def handle(req):
     if op == "status":
         pol = core.load_policy()
         dinst = core.resolve("", pol)  # "" ∉ patterns → resolves the default
-        return {"serve": FAB.alive(),
+        wstatus = core.woollama_status(pol)
+        return {"serve": bool(wstatus.get("reachable")),  # backend = woollama now
                 "loaded": core.loaded_models(pol["ollama"]["url"]),
                 "vram": core.gpu_vram(),
                 "default_model": dinst.get("model"),
                 "default_vendor": dinst.get("vendor"),
-                "woollama": core.woollama_status(pol)}
+                "woollama": wstatus}
     if op == "run":
         pat = req.get("pattern")
         image = req.get("image")
@@ -347,29 +344,18 @@ def handle(req):
             pct = core.gpu_placement(model, pol["ollama"]["url"]) if (vendor or "").lower() == "ollama" else None
             return {"output": out, "model": model, "vendor": vendor, "placement": pct,
                     "warn_below": pol["ollama"].get("warn_below_gpu", 99), "capability": "vision"}
-        opts = core.inst_to_options(inst)
         is_ollama = (vendor or "").lower() == "ollama"
-        mctx = inst.get("ctx") or (core.pick_ctx(inp) if is_ollama else None)
-        # woollama inference seam: plain runs render+infer on woollama's /w1, with
-        # fabric's advanced fields forwarded to woollama's fabric backend. Any
-        # failure (disabled/down/unservable) returns None → fabric fallback below.
+        # woollama is the text backend: it renders+infers on /w1 (forwarding
+        # fabric's advanced fields to its own managed fabric). No fabric fallback —
+        # if woollama is unavailable the run errors (it self-heals via ensure_serve).
         wout = _woollama_sync(pol, pat, inp, model, vendor, inst,
                               req.get("variables"), _woollama_extra(req))
-        if wout is not None:
-            pct = core.gpu_placement(model, pol["ollama"]["url"]) if is_ollama else None
-            return {"output": wout, "model": model, "vendor": vendor, "backend": "woollama",
-                    "placement": pct, "warn_below": pol["ollama"].get("warn_below_gpu", 99)}
-        log(f"run pattern={pat} model={model} vendor={vendor} input={len(inp)}ch ctx={mctx} opts={opts}")
-        try:
-            out = FAB.run(pat, inp, model, vendor, req.get("variables"), opts, model_ctx=mctx,
-                          context=req.get("context"), strategy=req.get("strategy"),
-                          language=req.get("language"), search=bool(req.get("search")))
-        except Exception as e:
-            log(f"run error: {e}")
-            return {"error": str(e)}
-        pct = core.gpu_placement(model, pol["ollama"]["url"]) if (vendor or "").lower() == "ollama" else None
-        log(f"run done: {len(out)}ch placement={pct}")
-        return {"output": out, "model": model, "vendor": vendor, "backend": "fabric",
+        if wout is None:
+            log(f"run failed: woollama unavailable (pattern={pat} model={model})")
+            return {"error": "woollama backend unavailable (required for text runs)"}
+        pct = core.gpu_placement(model, pol["ollama"]["url"]) if is_ollama else None
+        log(f"run done via woollama: {len(wout)}ch placement={pct}")
+        return {"output": wout, "model": model, "vendor": vendor, "backend": "woollama",
                 "placement": pct, "warn_below": pol["ollama"].get("warn_below_gpu", 99)}
     return {"error": f"unknown op {op!r}"}
 
@@ -401,7 +387,6 @@ def stream_run(req, send):
     inst = core.resolve(pat or "", pol)  # chat → the default instantiation
     model = req.get("model") or inst["model"]
     vendor = req.get("vendor") or inst["vendor"]
-    opts = core.inst_to_options(inst)
     warn_below = pol["ollama"].get("warn_below_gpu", 99)
     log(f"run-stream pattern={pat} session={session} model={model} vendor={vendor} broadcast={bcast}")
     if bcast:
@@ -486,10 +471,9 @@ def stream_run(req, send):
         return
 
     # woollama inference seam: plain, session-less streaming runs render+stream on
-    # woollama's /w1 (it owns templating). The live-server pre-check AND a failure
-    # before any chunk is emitted both fall back to fabric; only a failure AFTER
-    # chunks have streamed surfaces as an error (a partial stream can't be un-sent).
-    backend = "fabric"
+    # woollama's /w1 (it owns templating). woollama is the backend — any failure is
+    # an error to the client (no fabric fallback; it self-heals via ensure_serve).
+    backend = "woollama"
     out = None
     wool = (core.WoollamaClient(address=(pol.get("woollama") or {}).get("address"), log=log)
             if (core.woollama_enabled(pol) and not session)
@@ -518,22 +502,24 @@ def stream_run(req, send):
                 log(f"run-stream via woollama chat model={wmodel} recipe={is_recipe} → {len(out)}ch")
             backend = "woollama"
         except Exception as e:
-            if sent:  # a partial stream already went out — can't safely retry on fabric
-                log(f"run-stream woollama error after {sent} chunks: {e}")
-                (broadcast if bcast else send)(
-                    {"event": "error", "error": str(e)} if bcast else {"error": str(e)})
-                return
-            log(f"woollama stream failed before any chunk ({e}); falling back to fabric")
-            out = None  # fall through to the fabric path below
+            # No fabric fallback — woollama is the backend (and a partial stream
+            # can't be un-sent regardless).
+            log(f"run-stream woollama error{f' after {sent} chunks' if sent else ''}: {e}")
+            (broadcast if bcast else send)(
+                {"event": "error", "error": str(e)} if bcast else {"error": str(e)})
+            return
     elif wool is not None:
-        log("woollama enabled but no server discoverable; falling back to fabric")
+        # woollama enabled for a plain run but unreachable — no fabric fallback.
+        _err = "woollama backend unavailable (required for text runs)"
+        log("run-stream: " + _err)
+        (broadcast if bcast else send)(
+            {"event": "error", "error": _err} if bcast else {"error": _err})
+        return
 
     if out is None:
         # Local/ollama stateful chat through woollama (conv-7 store-backed): drive
-        # the conversation by our own session key (attach-by-key) when woollama has
-        # a conversation store wired. Degrades cleanly — if woollama is down or has
-        # no store for ollama (HTTP 501), we fall through to fabric's server-side
-        # session below, so Local chat keeps working without a store configured.
+        # the conversation by our own session key (attach-by-key). (Claude sessions
+        # took the stateful /v1/responses branch above; this covers ollama sessions.)
         if session and core.woollama_enabled(pol) and (vendor or "").lower() == "ollama":
             wsess = core.WoollamaClient(address=(pol.get("woollama") or {}).get("address"), log=log)
             if wsess.alive():
@@ -544,18 +530,13 @@ def stream_run(req, send):
                     out, backend = text, "woollama"
                     log(f"run-stream ollama session via woollama (attach-by-key) → {len(text)}ch")
                 except Exception as e:
-                    log(f"woollama ollama-session unavailable ({e}); falling back to fabric session")
+                    log(f"woollama ollama-session error: {e}")
         if out is None:
-            mctx = inst.get("ctx") or (core.pick_ctx(inp) if (vendor or "").lower() == "ollama" else None)
-            try:
-                out = FAB.run(pat, inp, model, vendor, req.get("variables"), opts,
-                              on_chunk=on_chunk, model_ctx=mctx, session=session,
-                              context=req.get("context"), strategy=req.get("strategy"),
-                              language=req.get("language"), search=bool(req.get("search")))
-            except Exception as e:
-                log(f"run-stream error: {e}")
-                (broadcast if bcast else send)({"event": "error", "error": str(e)} if bcast else {"error": str(e)})
-                return
+            _err = "woollama backend unavailable"
+            log(f"run-stream failed: {_err} (session={session} pat={pat})")
+            (broadcast if bcast else send)(
+                {"event": "error", "error": _err} if bcast else {"error": _err})
+            return
     pct = core.gpu_placement(model, pol["ollama"]["url"]) if (vendor or "").lower() == "ollama" else None
     log(f"run-stream done: placement={pct} broadcast={bcast} backend={backend}")
     done = {"model": model, "vendor": vendor, "placement": pct, "warn_below": warn_below,
@@ -648,14 +629,17 @@ def main():
             return
         except OSError:
             pass  # stale socket, no live daemon → safe to take over
-    FAB = core.FabricClient(log=log)
-    FAB.ensure_serve()
-    # Own a woollama instance too (discover-first: attaches to a running
-    # woollama.service, else spawns a keyless woollamad). Gated on [woollama].
+    # woollama is the backend now: own a woollama instance (discover-first —
+    # attaches to a running woollama.service, else spawns a keyless woollamad).
+    # We no longer spawn `fabric --serve`; woollama owns its own managed fabric.
     _pol = core.load_policy()
     if core.woollama_enabled(_pol):
         _wc = _pol.get("woollama") or {}
         core.WoollamaClient(address=_wc.get("address"), log=log).ensure_serve(bin=_wc.get("bin"))
+    # FabricClient is kept ONLY for vision (`run_image` shells out to `fabric -a`,
+    # which needs the fabric *binary* but no server). All other fabric REST paths
+    # are gone — woollama is the text backend.
+    FAB = core.FabricClient(log=log)
     try:
         os.unlink(path)
     except FileNotFoundError:
