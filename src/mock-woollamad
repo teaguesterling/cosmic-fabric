@@ -123,7 +123,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         inp = body.get("input", "") or ""
         variables = body.get("variables") or {}
         vstr = " ".join(f"{k}={v}" for k, v in sorted(variables.items()))
-        tag = name + (f"[{vstr}]" if vstr else "")
+        # Echo any fabric advanced fields too, so tests can assert they reached /w1.
+        adv = " ".join(f"{k}={body[k]}" for k in ("context", "strategy", "language", "search")
+                       if k in body)
+        tag = name + (f"[{vstr}]" if vstr else "") + (f"{{{adv}}}" if adv else "")
         if op == "render":  # render-without-run
             self._json({"prompt": f"<{tag}>\n\n{inp}"})
         elif op == "run":  # templated run + infer (OpenAI-shaped result)

@@ -69,22 +69,25 @@ def _confirm_callback_for_stream():
     return confirm
 
 
-# ---------- woollama inference seam (slice 1) -------------------------------
+# ---------- woollama inference seam -----------------------------------------
 # A plain run can route its inference through the woollama router instead of
-# fabric's /chat: fabric assembles the prompt, woollama infers. Gated by the
-# [woollama] policy block, with automatic fallback to fabric (disabled, no live
-# server, an unsupported request feature, or any error). Sessions/tools/image
-# runs stay on fabric this slice — see doc/integration-plan + the seam plan.
+# The plain-run path goes through woollama: it renders the pattern on /w1 and
+# infers, forwarding fabric's advanced fields (context/strategy/language/search)
+# to its own managed fabric backend. Gated by the [woollama] policy block, with
+# automatic fallback to fabric (disabled, no live server, or any error — including
+# a pattern/context woollama's fabric can't serve). Sessions/tools/image runs are
+# handled on their own branches; see doc/integration-plan + the seam plan.
 
-def _woollama_eligible(req):
-    """A run is woollama-eligible only if it uses none of fabric's /chat-only
-    features (named context, prompt strategy, output language, model-side web
-    search) — the router path doesn't honor them, so those go to fabric."""
-    return not (req.get("context") or req.get("strategy")
-                or req.get("language") or req.get("search"))
+def _woollama_extra(req):
+    """The fabric advanced fields woollama's /w1/run forwards to its fabric backend
+    (empty for a plain run). Kept out of the run body unless actually set."""
+    extra = {k: req[k] for k in ("context", "strategy", "language") if req.get(k)}
+    if req.get("search"):
+        extra["search"] = True
+    return extra
 
 
-def _woollama_sync(pol, pat, inp, model, vendor, inst, variables):
+def _woollama_sync(pol, pat, inp, model, vendor, inst, variables, extra=None):
     """Run the plain inference path through woollama. Returns the output text, or
     None to mean 'fall back to fabric' (disabled / no server / error)."""
     if not core.woollama_enabled(pol):
@@ -102,7 +105,8 @@ def _woollama_sync(pol, pat, inp, model, vendor, inst, variables):
         # cosmic-fabric no longer assembles the prompt via fabric).
         is_recipe = (vendor or "").lower() == "woollama"
         if pat and not is_recipe:
-            out = wool.run_pattern(pat, inp, variables=variables, model=wmodel, options=opts)
+            out = wool.run_pattern(pat, inp, variables=variables, model=wmodel,
+                                   options=opts, extra=extra)
             log(f"run via woollama /w1 pattern={pat} model={wmodel} → {len(out)}ch")
         else:
             out = wool.chat(wmodel, inp, opts)  # recipe owns its prompt, or no pattern → raw
@@ -311,15 +315,15 @@ def handle(req):
         opts = core.inst_to_options(inst)
         is_ollama = (vendor or "").lower() == "ollama"
         mctx = inst.get("ctx") or (core.pick_ctx(inp) if is_ollama else None)
-        # woollama inference seam (slice 1): plain runs route through the router
-        # (fabric assembles → woollama infers). fabric-specific ChatRequest
-        # features aren't honored on the router path, so those fall through.
-        if _woollama_eligible(req):
-            wout = _woollama_sync(pol, pat, inp, model, vendor, inst, req.get("variables"))
-            if wout is not None:
-                pct = core.gpu_placement(model, pol["ollama"]["url"]) if is_ollama else None
-                return {"output": wout, "model": model, "vendor": vendor, "backend": "woollama",
-                        "placement": pct, "warn_below": pol["ollama"].get("warn_below_gpu", 99)}
+        # woollama inference seam: plain runs render+infer on woollama's /w1, with
+        # fabric's advanced fields forwarded to woollama's fabric backend. Any
+        # failure (disabled/down/unservable) returns None → fabric fallback below.
+        wout = _woollama_sync(pol, pat, inp, model, vendor, inst,
+                              req.get("variables"), _woollama_extra(req))
+        if wout is not None:
+            pct = core.gpu_placement(model, pol["ollama"]["url"]) if is_ollama else None
+            return {"output": wout, "model": model, "vendor": vendor, "backend": "woollama",
+                    "placement": pct, "warn_below": pol["ollama"].get("warn_below_gpu", 99)}
         log(f"run pattern={pat} model={model} vendor={vendor} input={len(inp)}ch ctx={mctx} opts={opts}")
         try:
             out = FAB.run(pat, inp, model, vendor, req.get("variables"), opts, model_ctx=mctx,
@@ -453,7 +457,7 @@ def stream_run(req, send):
     backend = "fabric"
     out = None
     wool = (core.WoollamaClient(address=(pol.get("woollama") or {}).get("address"), log=log)
-            if (core.woollama_enabled(pol) and _woollama_eligible(req) and not session)
+            if (core.woollama_enabled(pol) and not session)
             else None)
     if wool is not None and wool.alive():
         sent = 0
@@ -471,7 +475,8 @@ def stream_run(req, send):
             if pat and not is_recipe:
                 out = wool.run_pattern_stream(pat, inp, on_chunk=on_wchunk,
                                               variables=req.get("variables"),
-                                              model=wmodel, options=wopts)
+                                              model=wmodel, options=wopts,
+                                              extra=_woollama_extra(req))
                 log(f"run-stream via woollama /w1 pattern={pat} model={wmodel} → {len(out)}ch")
             else:
                 out = wool.chat_stream(wmodel, inp, on_chunk=on_wchunk, options=wopts)

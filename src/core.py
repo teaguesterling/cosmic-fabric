@@ -691,7 +691,7 @@ class WoollamaClient:
             conn.close()
         return d.get("prompt", "")
 
-    def _run_pattern_request(self, pattern, input_text, variables, model, options, stream, timeout):
+    def _run_pattern_request(self, pattern, input_text, variables, model, options, stream, timeout, extra=None):
         from urllib.parse import quote
         body = {"input": input_text or "", "stream": bool(stream)}
         if variables:
@@ -700,17 +700,23 @@ class WoollamaClient:
             body["model"] = model
         if options:
             body["options"] = options
+        if extra:  # fabric advanced fields (context/strategy/language/search) forwarded to /w1/run
+            for k, v in extra.items():
+                if v not in (None, "", False):
+                    body[k] = v
         conn = self._connect(timeout)
         conn.request("POST", f"/w1/patterns/{quote(pattern, safe='')}/run",
                      body=json.dumps(body).encode(),
                      headers={"Content-Type": "application/json"})
         return conn
 
-    def run_pattern(self, pattern, input_text, variables=None, model=None, options=None, timeout=600):
+    def run_pattern(self, pattern, input_text, variables=None, model=None, options=None, timeout=600, extra=None):
         """POST /w1/patterns/<name>/run → the assistant's text. woollama renders the
         pattern (system + {{vars}}) and infers; `model` overrides the recipe's
-        inferencer per call. woollama owns the templating (its /w1 namespace)."""
-        conn = self._run_pattern_request(pattern, input_text, variables, model, options, False, timeout)
+        inferencer per call. `extra` carries fabric advanced fields
+        (context/strategy/language/search) woollama forwards to its fabric backend.
+        woollama owns the templating (its /w1 namespace)."""
+        conn = self._run_pattern_request(pattern, input_text, variables, model, options, False, timeout, extra)
         try:
             resp = conn.getresponse()
             raw = resp.read()
@@ -723,10 +729,11 @@ class WoollamaClient:
         return ((d.get("choices") or [{}])[0].get("message") or {}).get("content", "").strip()
 
     def run_pattern_stream(self, pattern, input_text, on_chunk=None, variables=None,
-                           model=None, options=None, timeout=600):
+                           model=None, options=None, timeout=600, extra=None):
         """POST /w1/patterns/<name>/run (stream:true) → accumulated text, calling
-        `on_chunk` with each OpenAI SSE delta."""
-        conn = self._run_pattern_request(pattern, input_text, variables, model, options, True, timeout)
+        `on_chunk` with each OpenAI SSE delta. `extra` carries fabric advanced fields
+        (context/strategy/language/search) forwarded to woollama's fabric backend."""
+        conn = self._run_pattern_request(pattern, input_text, variables, model, options, True, timeout, extra)
         out = []
         try:
             resp = conn.getresponse()

@@ -158,6 +158,12 @@ class MockWoollama(unittest.TestCase):
         self.assertIn("STREAMRUN", out)
         self.assertGreaterEqual(len(chunks), 1)
 
+    def test_run_pattern_forwards_extra(self):  # advanced fields → /w1/run body
+        out = core.WoollamaClient().run_pattern(
+            "echo-pattern", "B", extra={"strategy": "cot", "search": True})
+        self.assertIn("strategy=cot", out)
+        self.assertIn("search=True", out)
+
 
 @unittest.skipUnless(WOOLLAMAD_BIN, "no woollamad binary (set WOOLLAMAD_BIN or put it on PATH)")
 class RealWoollama(unittest.TestCase):
@@ -461,6 +467,17 @@ class DaemonWoollamaReroute(unittest.TestCase):
         self.assertIn("echo-pattern", joined)   # pattern reached /w1/run (stream)
         self.assertIn("STREAM-X", joined)        # input reached /w1
         self.assertTrue(done and done[0].get("backend") == "woollama")
+
+    def test_advanced_fields_forwarded_to_w1(self):
+        # context/strategy/language/search now route THROUGH woollama (forwarded to
+        # its fabric backend), not to cosmic-fabric's fabric. Assert they reach /w1.
+        extra = self.mod._woollama_extra(
+            {"context": "myctx", "strategy": "cot", "language": "fr", "search": True})
+        out = self.mod._woollama_sync(
+            copy.deepcopy(self.POL), "echo-pattern", "X", "qwen", "ollama", {}, None, extra)
+        self.assertIsNotNone(out)
+        for token in ("context=myctx", "strategy=cot", "language=fr", "search=True"):
+            self.assertIn(token, out)
 
     def test_sync_run_falls_back_on_woollama_error(self):
         # woollama errors (HTTP 500) on /w1/run → run_pattern raises → _woollama_sync
