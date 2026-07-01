@@ -3,6 +3,28 @@
 All notable changes to cosmic-fabric are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+**woollama is now the text backend; fabric is gone except for vision.** Completes
+the woollama-replaces-fabric migration.
+
+### Changed
+- The daemon no longer spawns `fabric --serve`. woollama renders + infers every
+  text run on its `/w1` surface (which owns woollama's managed fabric). All fabric
+  REST fallbacks are removed — a woollama outage now surfaces as an error rather
+  than silently using a local fabric (woollama self-heals via `ensure_serve`).
+- Advanced fabric fields (`context`/`strategy`/`language`/`search`) are forwarded
+  through woollama to its fabric backend; the `_woollama_eligible` gate is gone.
+- The per-pattern model picker (`models` op) is sourced from woollama's
+  `/v1/models` (unified with the Run-tab picker), excluding the `woollama/<name>`
+  recipe/pattern namespace. Vendor names are woollama's lowercase form.
+- `[woollama] enabled` now defaults to **true**. The `serve`/health fields report
+  woollama reachability. `fabric_url` is deprecated (fabric lives behind woollama).
+
+### Retained
+- **Vision** (`run_image`) still shells out to the fabric CLI (`fabric -a`) — it
+  needs the fabric *binary* but no server. The only remaining fabric dependency.
+
 ## [0.2.0] - 2026-06-29
 
 First tagged release. Its defining feature is the **woollama integration**: the

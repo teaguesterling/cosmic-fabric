@@ -26,10 +26,11 @@ def load_policy():
         "surface": {"include": [], "exclude": []},
         "models": {},
         "tools": {},   # decision 5: [tools.<name>] sections (allow_domains, roots, …)
-        # woollama inference seam: when enabled, plain (non-tool, non-image) runs
-        # route their inference through the woollama router — fabric assembles the
-        # prompt, woollama infers. Off by default; fabric stays the fallback.
-        "woollama": {"enabled": False, "address": None, "bin": None},
+        # woollama is the text backend: plain (non-tool, non-image) runs render +
+        # infer on woollama's /w1 (which owns its managed fabric). On by default —
+        # fabric --serve is no longer spawned; the fabric binary is kept only for
+        # vision (`run_image`). Set enabled=false only to hard-disable routing.
+        "woollama": {"enabled": True, "address": None, "bin": None},
     }
     try:
         import tomllib
@@ -876,8 +877,9 @@ def woollama_model(model, vendor):
 def woollama_status(pol):
     """Observability snapshot of the inference seam, for the `status` op / panel:
     whether routing is enabled, whether a server is reachable, the resolved
-    endpoint (unix:… or http://…), and which backend a plain eligible run uses
-    *right now* — woollama only when both enabled and reachable, else fabric."""
+    endpoint (unix:… or http://…), and which backend a plain run uses *right now* —
+    `woollama` when enabled+reachable, else `none` (fabric --serve is no longer run,
+    so there is no fallback text backend)."""
     enabled = woollama_enabled(pol)
     client = WoollamaClient(address=(pol.get("woollama") or {}).get("address"))
     reachable = client.alive()
@@ -885,7 +887,7 @@ def woollama_status(pol):
         "enabled": enabled,
         "reachable": reachable,
         "endpoint": client.url,
-        "active_backend": "woollama" if (enabled and reachable) else "fabric",
+        "active_backend": "woollama" if (enabled and reachable) else "none",
     }
 
 

@@ -584,9 +584,9 @@ class WoollamaSeam(unittest.TestCase):
             with patch.dict(_os.environ, self._empty_runtime_env(td), clear=True):
                 self.assertEqual(core.woollama_status({}),
                                  {"enabled": False, "reachable": False,
-                                  "endpoint": None, "active_backend": "fabric"})
+                                  "endpoint": None, "active_backend": "none"})
 
-    def test_status_enabled_but_unreachable_is_fabric(self):
+    def test_status_enabled_but_unreachable_is_none(self):
         import os as _os, tempfile
         from unittest.mock import patch
         with tempfile.TemporaryDirectory() as td:  # no server discoverable
@@ -594,7 +594,8 @@ class WoollamaSeam(unittest.TestCase):
                 s = core.woollama_status({"woollama": {"enabled": True}})
                 self.assertTrue(s["enabled"])
                 self.assertFalse(s["reachable"])
-                self.assertEqual(s["active_backend"], "fabric")  # reachability gates it
+                # No fabric fallback exists anymore, so there's no active backend.
+                self.assertEqual(s["active_backend"], "none")
 
     def test_status_enabled_and_reachable_is_woollama(self):
         import os as _os, tempfile
