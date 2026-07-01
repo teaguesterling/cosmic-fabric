@@ -95,6 +95,15 @@ impl Status {
             "\u{25c7} woollama down".to_string()
         })
     }
+
+    /// The single backend-health chip for the status line: woollama's badge when
+    /// routing is enabled (`◆ woollama` up / `◇ woollama down`), else `○ woollama
+    /// off`. woollama is the backend now, so this replaces the old fabric `serve`
+    /// display (they'd otherwise both report woollama — see the daemon's `serve`).
+    pub fn backend_pill(&self) -> String {
+        self.woollama_badge()
+            .unwrap_or_else(|| "\u{25cb} woollama off".to_string())
+    }
 }
 
 pub async fn status() -> Result<Status, String> {
@@ -488,6 +497,14 @@ mod tests {
     #[test]
     fn badge_down_when_enabled_but_unreachable() {
         assert_eq!(wool(true, false).woollama_badge().as_deref(), Some("\u{25c7} woollama down"));
+    }
+
+    #[test]
+    fn backend_pill_reflects_woollama() {
+        assert_eq!(wool(true, true).backend_pill(), "\u{25c6} woollama");
+        assert_eq!(wool(true, false).backend_pill(), "\u{25c7} woollama down");
+        // routing disabled → an explicit "off" chip (no fabric backend to show)
+        assert_eq!(Status::default().backend_pill(), "\u{25cb} woollama off");
     }
 
     #[test]

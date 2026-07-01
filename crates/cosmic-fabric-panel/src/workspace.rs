@@ -1020,7 +1020,7 @@ impl cosmic::Application for Workspace {
 
 impl Workspace {
     fn status_pill(&self, st: &Status) -> String {
-        let serve = if st.serve { "\u{25cf} up" } else { "\u{25cb} down" };
+        let backend = st.backend_pill();
         let model = st.default_model.clone().unwrap_or_else(|| "—".into());
         let gpu = st
             .loaded
@@ -1031,11 +1031,7 @@ impl Workspace {
                 format!("  \u{00b7}  {p:.0}% GPU{warn}")
             })
             .unwrap_or_default();
-        let wool = st
-            .woollama_badge()
-            .map(|b| format!("  \u{00b7}  {b}"))
-            .unwrap_or_default();
-        format!("serve {serve}  \u{00b7}  {model}{gpu}{wool}")
+        format!("{backend}  \u{00b7}  {model}{gpu}")
     }
 
     /// On Run: reveal + expand the Response card and collapse the (now

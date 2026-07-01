@@ -291,7 +291,7 @@ impl cosmic::Application for Window {
 
         // ---- status ----
         if let Some(s) = &self.status {
-            let serve = if s.serve { "\u{25cf} up" } else { "\u{25cb} down" };
+            let backend = s.backend_pill();
             let model = match (&s.default_model, &s.default_vendor) {
                 (Some(m), Some(v)) => format!("{m} ({v})"),
                 _ => "—".into(),
@@ -305,12 +305,8 @@ impl cosmic::Application for Window {
                     format!(" \u{00b7} {p:.0}% GPU{warn}")
                 })
                 .unwrap_or_default();
-            let wool = s
-                .woollama_badge()
-                .map(|b| format!("  \u{00b7}  {b}"))
-                .unwrap_or_default();
             col = col.push(padded_control(text::caption(format!(
-                "serve {serve}  \u{00b7}  {model}{gpu}{wool}"
+                "{backend}  \u{00b7}  {model}{gpu}"
             ))));
         }
 
