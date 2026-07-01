@@ -468,6 +468,15 @@ class DaemonWoollamaReroute(unittest.TestCase):
         self.assertIn("STREAM-X", joined)        # input reached /w1
         self.assertTrue(done and done[0].get("backend") == "woollama")
 
+    def test_models_op_sources_from_woollama(self):
+        # The model catalog now comes from woollama's /v1/models (unified picker),
+        # split into a {vendor: [model]} map — not from fabric. The `woollama/<name>`
+        # recipe/pattern namespace is excluded (those aren't inference models).
+        r = self.mod.handle({"op": "models"})
+        self.assertIn("ollama", r["vendors"])
+        self.assertIn("mock-model", r["vendors"]["ollama"])
+        self.assertNotIn("woollama", r["vendors"])  # woollama/echo is a recipe, not a model
+
     def test_advanced_fields_forwarded_to_w1(self):
         # context/strategy/language/search now route THROUGH woollama (forwarded to
         # its fabric backend), not to cosmic-fabric's fabric. Assert they reach /w1.

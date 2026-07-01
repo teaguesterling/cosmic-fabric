@@ -131,6 +131,36 @@ def _pattern_names(pol):
     return FAB.list_patterns()
 
 
+def _woollama_catalog(pol):
+    """woollama's addressable **base models** as {"models": [ids], "vendors":
+    {vendor: [model]}} for the model pickers — same shape fabric's catalog had, so
+    the panel needs no change. woollama ids are `provider/model` (e.g.
+    `ollama/qwen3:14b`); the vendors map splits them on the first `/`. The
+    `woollama/<name>` namespace (recipes + the fabric pattern library, addressable
+    as models) is excluded — those are patterns, not inference models, and belong in
+    the pattern picker, not the model picker. Returns None when woollama is
+    off/unreachable so the caller falls back to fabric's catalog. (Cloud providers
+    woollama doesn't yet enumerate in /v1/models are absent here — see woollama #3;
+    they still route by id, matching the Run-tab picker's existing behavior.)"""
+    if not core.woollama_enabled(pol):
+        return None
+    wool = core.WoollamaClient(address=(pol.get("woollama") or {}).get("address"), log=log)
+    if not wool.alive():
+        return None
+    try:
+        ids = wool.list_models()
+    except Exception as e:
+        log(f"woollama catalog failed ({e}); falling back to fabric")
+        return None
+    vendors, models = {}, []
+    for mid in ids:
+        prov, _, rest = mid.partition("/")
+        if prov and rest and prov != "woollama":  # skip recipes/patterns-as-models
+            vendors.setdefault(prov, []).append(rest)
+            models.append(mid)
+    return {"models": models, "vendors": vendors}
+
+
 def broadcast(event):
     with SUBS_LOCK:
         subs = list(SUBS)
@@ -204,6 +234,11 @@ def handle(req):
         # cache would also diverge from the live `surface` op below.
         return {"patterns": _pattern_names(core.load_policy())}
     if op == "models":
+        # The per-pattern model picker, now sourced from woollama (unifying it with
+        # the Run-tab `woollama_models` picker); fabric's catalog is the fallback.
+        cat = _woollama_catalog(core.load_policy())
+        if cat is not None:
+            return cat
         return {"models": FAB.list_models(), "vendors": FAB.model_catalog()}
     if op == "woollama_models":
         # The router's addressable models, for the Run-tab per-run model picker.
