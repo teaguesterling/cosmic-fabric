@@ -29,6 +29,12 @@ import core  # noqa: E402
 LOG = os.path.expanduser("~/.cache/cosmic-fabric/daemon.log")
 FAB = None
 
+# Attach-by-key namespace: our keys in woollama's GLOBAL keyspace (other clients
+# — lackpy, a second panel — share that map). A cosmic session named S is the
+# woollama conversation keyed "cosmic-fabric:S"; woollama owns the durable
+# key→conversation map, we never hold conversation ids.
+WOOLLAMA_KEY_PREFIX = "cosmic-fabric:"
+
 # Result broker: subscribers (e.g. the panel) register a queue; a run with
 # "broadcast":true (e.g. from the launcher) pushes its events to all of them.
 SUBS = []
@@ -249,6 +255,64 @@ def handle(req):
         except Exception as e:
             log(f"woollama_models error: {e}")
             return {"models": [], "error": str(e)}
+    if op == "sessions_list":
+        # Our resumable sessions = woollama conversations keyed under our prefix
+        # (conv-2 discovery). The session name is the key with the prefix stripped;
+        # conversation ids stay daemon-side (the panel drives everything by name).
+        pol = core.load_policy()
+        wool = core.WoollamaClient(address=(pol.get("woollama") or {}).get("address"), log=log)
+        try:
+            convs = wool.conversations(key_prefix=WOOLLAMA_KEY_PREFIX)
+        except Exception as e:
+            log(f"sessions_list error: {e}")
+            return {"sessions": [], "error": str(e)}
+        sessions = [{
+            "session": c["key"][len(WOOLLAMA_KEY_PREFIX):],
+            "model": c.get("model"),
+            "backend": c.get("backend"),
+            "status": c.get("status"),
+            "title": c.get("title"),
+            "updated_at": c.get("updated_at"),
+        } for c in convs]
+        sessions.sort(key=lambda s: s.get("updated_at") or 0, reverse=True)
+        return {"sessions": sessions}
+    if op == "session_transcript":
+        # Resume-on-open read: the transcript for a session name, as [role, text]
+        # pairs. Look the conversation up BY KEY (list + filter) — attach-by-key
+        # POSTs would CREATE a conversation, and a read must never do that. An
+        # unknown session is just an empty transcript (fresh session, not an error).
+        session = req.get("session")
+        if not session:
+            return {"error": "missing session"}
+        pol = core.load_policy()
+        wool = core.WoollamaClient(address=(pol.get("woollama") or {}).get("address"), log=log)
+        key = WOOLLAMA_KEY_PREFIX + session
+        try:
+            convs = [c for c in wool.conversations(key_prefix=key) if c.get("key") == key]
+            if not convs:
+                return {"session": session, "messages": []}
+            msgs = wool.conversation_items(convs[0]["id"])
+        except Exception as e:
+            log(f"session_transcript error: {e}")
+            return {"session": session, "messages": [], "error": str(e)}
+        return {"session": session, "messages": [[r, t] for r, t in msgs]}
+    if op == "session_delete":
+        # End a session's routing handle. The backing store owns (and may retain)
+        # the bytes — woollama never deletes state it doesn't own. Unknown session
+        # → deleted:false (already gone counts as gone).
+        session = req.get("session")
+        if not session:
+            return {"error": "missing session"}
+        pol = core.load_policy()
+        wool = core.WoollamaClient(address=(pol.get("woollama") or {}).get("address"), log=log)
+        key = WOOLLAMA_KEY_PREFIX + session
+        try:
+            convs = [c for c in wool.conversations(key_prefix=key) if c.get("key") == key]
+            deleted = bool(convs) and wool.delete_conversation(convs[0]["id"])
+        except Exception as e:
+            log(f"session_delete error: {e}")
+            return {"session": session, "deleted": False, "error": str(e)}
+        return {"session": session, "deleted": deleted}
     if op == "assemble":
         pat = req.get("pattern")
         if not pat:
@@ -414,10 +478,8 @@ def stream_run(req, send):
         wmodel = core.woollama_model(model, vendor)
         # Attach-by-key: drive the conversation by our own (namespaced) session
         # name and let woollama own the durable key→conv map — it survives daemon
-        # restarts, and we no longer hold the conversation id ourselves. The
-        # `cosmic-fabric:` prefix isolates our keys in woollama's GLOBAL keyspace
-        # (other clients — lackpy, a second panel — share that map).
-        key = f"cosmic-fabric:{session}"
+        # restarts, and we no longer hold the conversation id ourselves.
+        key = WOOLLAMA_KEY_PREFIX + session
         log(f"run-stream stateful woollama model={wmodel} session={session} (attach-by-key)")
         try:
             text, _ = wool.respond(wmodel, inp, key=key)  # we no longer keep the conv id
@@ -532,7 +594,7 @@ def stream_run(req, send):
             if wsess.alive():
                 try:
                     text, _ = wsess.respond(core.woollama_model(model, vendor), inp,
-                                            key=f"cosmic-fabric:{session}")
+                                            key=WOOLLAMA_KEY_PREFIX + session)
                     on_chunk(text)  # full reply as one chunk (woollama defers stateful streaming)
                     out, backend = text, "woollama"
                     log(f"run-stream ollama session via woollama (attach-by-key) → {len(text)}ch")

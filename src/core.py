@@ -866,6 +866,72 @@ class WoollamaClient:
                 break
         return (text or fallback).strip(), conv
 
+    def conversations(self, key_prefix=None, timeout=10):
+        """GET /v1/conversations → the router's conversation objects (dicts with
+        id/key/model/backend/status/title/created_at/updated_at). woollama echoes
+        the attach-by-key `key` on each object, so pass `key_prefix` (e.g.
+        "cosmic-fabric:") to see only OUR sessions in woollama's GLOBAL keyspace
+        — other clients (lackpy, a second panel) share that map."""
+        conn = self._connect(timeout)
+        try:
+            conn.request("GET", "/v1/conversations")
+            d = json.load(conn.getresponse())
+        finally:
+            conn.close()
+        convs = [c for c in d.get("data", []) if isinstance(c, dict) and c.get("id")]
+        if key_prefix:
+            convs = [c for c in convs
+                     if isinstance(c.get("key"), str) and c["key"].startswith(key_prefix)]
+        return convs
+
+    def conversation_items(self, conversation_id, timeout=10):
+        """GET /v1/conversations/{id}/items → the transcript as (role, text)
+        pairs, oldest first. Items come back in the OpenAI item shape (`type:
+        "message"`, content parts of `input_text`/`output_text`); non-message
+        items and non-text parts are skipped. This is the resume-on-open read:
+        the store owns the bytes, we only render them."""
+        conn = self._connect(timeout)
+        try:
+            conn.request("GET", f"/v1/conversations/{conversation_id}/items")
+            resp = conn.getresponse()
+            raw = resp.read()
+            if resp.status >= 400:
+                raise RuntimeError(
+                    f"woollama /v1/conversations/{conversation_id}/items {resp.status}: "
+                    f"{raw[:300].decode('utf-8', 'replace')}")
+            d = json.loads(raw)
+        finally:
+            conn.close()
+        out = []
+        for item in d.get("data", []):
+            if not isinstance(item, dict) or item.get("type") != "message":
+                continue
+            role = item.get("role") or ""
+            text = "".join(
+                p.get("text", "") for p in (item.get("content") or [])
+                if isinstance(p, dict) and p.get("type") in ("input_text", "output_text"))
+            if role and text:
+                out.append((role, text))
+        return out
+
+    def delete_conversation(self, conversation_id, timeout=10):
+        """DELETE /v1/conversations/{id} → True on 2xx, False on 404 (already
+        gone counts as gone). Ends the ROUTING HANDLE — the backing store owns
+        (and may retain) the bytes; woollama never deletes state it doesn't own."""
+        conn = self._connect(timeout)
+        try:
+            conn.request("DELETE", f"/v1/conversations/{conversation_id}")
+            resp = conn.getresponse()
+            resp.read()
+            if resp.status == 404:
+                return False
+            if resp.status >= 400:
+                raise RuntimeError(
+                    f"woollama DELETE /v1/conversations/{conversation_id}: {resp.status}")
+            return True
+        finally:
+            conn.close()
+
 
 def woollama_model(model, vendor):
     """cosmic-fabric `{model, vendor}` → woollama's namespaced model id. Ollama
