@@ -59,6 +59,12 @@ pub struct SessionApp {
     /// over the input area. The daemon-side run-loop thread is blocked on
     /// the matching tool-confirm event with a 60s timeout.
     pending_confirm: Option<(String, String)>,
+    /// Resumable sessions (woollama conversations under our key namespace),
+    /// fetched from the daemon when the picker opens. History is server-side —
+    /// resuming loads the transcript and re-attaches by session name.
+    sessions: Vec<daemon::SessionInfo>,
+    /// The Resume picker card is open.
+    show_sessions: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -72,6 +78,19 @@ pub enum Message {
     ConfirmTool { id: String, approved: bool },
     /// The tool_confirm op completed (ack from daemon).
     ConfirmAcked(Result<(), String>),
+    /// Toggle the Resume picker; opening (re)fetches the session list.
+    ToggleSessions,
+    /// The daemon answered `sessions_list` (Err ⇒ older daemon / woollama down
+    /// / no store — the picker just shows why, the app is unaffected).
+    SessionsLoaded(Result<Vec<daemon::SessionInfo>, String>),
+    /// User picked a session to resume — re-attach by NAME and load history.
+    ResumeSession(String),
+    /// The resumed session's transcript arrived (resume-on-open read).
+    TranscriptLoaded(String, Result<Vec<(String, String)>, String>),
+    /// User deleted a session from the picker (ends the woollama handle).
+    DeleteSession(String),
+    /// `session_delete` completed → refresh the picker list.
+    SessionDeleted(Result<bool, String>),
 }
 
 /// One-line, ≤80-char representation of a tool's args for inline display.
@@ -124,6 +143,8 @@ impl cosmic::Application for SessionApp {
             streaming: false,
             error: None,
             pending_confirm: None,
+            sessions: Vec::new(),
+            show_sessions: false,
         };
         (me, app::Task::none())
     }
@@ -251,6 +272,87 @@ impl cosmic::Application for SessionApp {
             Message::ConfirmAcked(Err(e)) => {
                 self.error = Some(format!("confirm failed: {e}"));
             }
+            Message::ToggleSessions => {
+                self.show_sessions = !self.show_sessions;
+                if self.show_sessions {
+                    // (Re)fetch on open — the list is server-side truth, cheap to read.
+                    return cosmic::Task::perform(daemon::sessions_list(), |r| {
+                        cosmic::Action::App(Message::SessionsLoaded(r))
+                    });
+                }
+            }
+            Message::SessionsLoaded(Ok(sessions)) => {
+                self.sessions = sessions;
+            }
+            Message::SessionsLoaded(Err(e)) => {
+                // Older daemon / woollama down / no store: an empty picker with
+                // the reason — never an app-level failure.
+                self.sessions.clear();
+                self.error = Some(format!("sessions: {e}"));
+            }
+            Message::ResumeSession(name) => {
+                if self.streaming {
+                    return app::Task::none(); // don't yank state mid-turn
+                }
+                self.show_sessions = false;
+                // Re-attach by NAME (the same attach-by-key the send path uses);
+                // the backend toggle follows the session's model so the next turn
+                // continues on the backend that owns its history.
+                if let Some(info) = self.sessions.iter().find(|s| s.session == name) {
+                    self.backend = match info.model.as_deref() {
+                        Some(m) if m.starts_with("claude") => ChatBackend::Claude,
+                        _ => ChatBackend::Local,
+                    };
+                }
+                self.session = name.clone();
+                self.messages.clear();
+                self.error = None;
+                self.pending = None;
+                self.pending_confirm = None;
+                return cosmic::Task::perform(daemon::session_transcript(name.clone()), move |r| {
+                    cosmic::Action::App(Message::TranscriptLoaded(name.clone(), r))
+                });
+            }
+            Message::TranscriptLoaded(name, Ok(msgs)) => {
+                // Ignore a stale load if the user has already moved on.
+                if name == self.session {
+                    self.messages = msgs
+                        .into_iter()
+                        .filter_map(|(role, text)| match role.as_str() {
+                            "user" => Some((Role::User, text)),
+                            "assistant" => Some((Role::Assistant, text)),
+                            _ => None, // system/tool items aren't chat bubbles
+                        })
+                        .collect();
+                }
+            }
+            Message::TranscriptLoaded(name, Err(e)) => {
+                if name == self.session {
+                    self.error = Some(format!("transcript: {e}"));
+                }
+            }
+            Message::DeleteSession(name) => {
+                // Deleting the session we're IN resets to a fresh one (its
+                // server-side history handle is going away).
+                if name == self.session {
+                    self.session = new_session_name();
+                    self.messages.clear();
+                }
+                return cosmic::Task::perform(daemon::session_delete(name), |r| {
+                    cosmic::Action::App(Message::SessionDeleted(r))
+                });
+            }
+            Message::SessionDeleted(Ok(_)) => {
+                // Refresh the (open) picker so the row disappears.
+                if self.show_sessions {
+                    return cosmic::Task::perform(daemon::sessions_list(), |r| {
+                        cosmic::Action::App(Message::SessionsLoaded(r))
+                    });
+                }
+            }
+            Message::SessionDeleted(Err(e)) => {
+                self.error = Some(format!("delete failed: {e}"));
+            }
         }
         app::Task::none()
     }
@@ -274,6 +376,8 @@ impl cosmic::Application for SessionApp {
             cosmic::widget::Space::new().width(Length::Fill),
             local_btn,
             claude_btn,
+            button::text(if self.show_sessions { "Resume ▴" } else { "Resume ▾" })
+                .on_press(Message::ToggleSessions),
             button::text("New chat").on_press(Message::NewSession),
         ]
         .spacing(s.space_s)
@@ -323,8 +427,33 @@ impl cosmic::Application for SessionApp {
             .spacing(s.space_s)
             .padding(s.space_m)
             .push(header)
-            .push(divider::horizontal::default())
-            .push(scrollable(convo).height(Length::Fill).width(Length::Fill));
+            .push(divider::horizontal::default());
+        // Resume picker: server-side sessions (woollama conversations under our
+        // key namespace), newest first. History lives with the store — picking
+        // one loads its transcript and re-attaches by name.
+        if self.show_sessions {
+            let mut list = Column::new().spacing(s.space_xxs).push(text::heading("Resume a session"));
+            if self.sessions.is_empty() {
+                list = list.push(text::caption(
+                    "No resumable sessions (needs woollama + a conversation store).",
+                ));
+            }
+            for info in &self.sessions {
+                let name = info.session.clone();
+                let meta = info.model.clone().unwrap_or_default();
+                let row = cosmic::iced::widget::row![
+                    button::text(name.clone()).on_press(Message::ResumeSession(name.clone())),
+                    text::caption(meta),
+                    cosmic::widget::Space::new().width(Length::Fill),
+                    button::text("\u{2715}").on_press(Message::DeleteSession(name.clone())),
+                ]
+                .spacing(s.space_xs)
+                .align_y(Alignment::Center);
+                list = list.push(row);
+            }
+            col = col.push(container(list).padding(s.space_xs).class(theme::Container::Card));
+        }
+        col = col.push(scrollable(convo).height(Length::Fill).width(Length::Fill));
         if let Some(e) = &self.error {
             col = col.push(text::caption(e.clone()));
         }

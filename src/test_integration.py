@@ -25,6 +25,7 @@ import sys
 import tempfile
 import time
 import unittest
+import urllib.error
 import urllib.request
 from unittest.mock import patch
 
@@ -64,6 +65,22 @@ OLLAMA_URL = os.environ.get("WOOLLAMA_TEST_OLLAMA_URL", "http://127.0.0.1:11434"
 # A full inferencer id (e.g. "ollama/qwen2.5:1.5b"); auto-picked from ollama if unset.
 TEST_MODEL = os.environ.get("WOOLLAMA_TEST_MODEL")
 _SMALL_PREFS = ["qwen2.5:1.5b", "qwen2.5:1.5b-cpu", "llama3.2:latest", "gemma:2b"]
+# The conversation store the isolated test daemon points at (conv-7 store-backed;
+# makes ollama models stateful). Defaults to the reference rest-convstore's
+# conventional local port; the conversations test skips cleanly if nothing answers.
+CONVSTORE_URL = os.environ.get("WOOLLAMA_TEST_CONVSTORE_URL", "http://127.0.0.1:9000")
+
+
+def _convstore_up():
+    """True if SOMETHING answers HTTP at CONVSTORE_URL (any status — even a 404
+    proves a listener; only a connection failure means 'down')."""
+    try:
+        urllib.request.urlopen(CONVSTORE_URL + "/", timeout=2)
+        return True
+    except urllib.error.HTTPError:
+        return True
+    except Exception:
+        return False
 
 
 def _ollama_tags():
@@ -182,6 +199,7 @@ class RealWoollama(unittest.TestCase):
     proc = None
     rt = None
     cfg = None
+    state = None
     has_fabric = False
     model = None
     _old_xdg = None
@@ -216,11 +234,22 @@ class RealWoollama(unittest.TestCase):
                 '"fabric": {"managed": true, "command": "%s", "default_model": "%s"}, '
                 % (FABRIC_BIN, cls.model)
             )
+        # A conversation store makes ollama models stateful on /v1/responses
+        # (conv-7). The store connects per-request, so a dead URL only means the
+        # conversations test skips — nothing else is affected.
+        convstore_cfg = ('"conversationStore": {"type": "http", "url": "%s"}, '
+                         % CONVSTORE_URL)
         with open(os.path.join(cls.cfg, "mcp.json"), "w") as f:
-            f.write("{" + fabric_cfg + '"mcpServers": {}}')
+            f.write("{" + fabric_cfg + convstore_cfg + '"mcpServers": {}}')
 
+        # XDG_STATE_HOME must be isolated too: the conversations test creates
+        # handles, and the daemon persists its handle table to
+        # $XDG_STATE_HOME/woollama/conversations.json — without this it would
+        # write into (and pollute) the user's real live-daemon state.
+        cls.state = tempfile.mkdtemp(prefix="cf-real-state-")
         env = dict(os.environ, XDG_RUNTIME_DIR=cls.rt,
-                   WOOLLAMA_CONFIG_DIR=cls.cfg, WOOLLAMA_ADDRESS="127.0.0.1:0")
+                   WOOLLAMA_CONFIG_DIR=cls.cfg, WOOLLAMA_ADDRESS="127.0.0.1:0",
+                   XDG_STATE_HOME=cls.state)
         env.pop("COSMIC_FABRIC_WOOLLAMA_ADDRESS", None)
         cls._log = open(os.path.join(cls.rt, "woollamad.log"), "w")
         cls.proc = subprocess.Popen(
@@ -241,6 +270,7 @@ class RealWoollama(unittest.TestCase):
             cls._stop_proc()
             shutil.rmtree(cls.rt, ignore_errors=True)
             shutil.rmtree(cls.cfg, ignore_errors=True)
+            shutil.rmtree(cls.state, ignore_errors=True)
             raise unittest.SkipTest("real woollamad did not come up")
 
         cls._old_xdg = os.environ.get("XDG_RUNTIME_DIR")
@@ -259,6 +289,7 @@ class RealWoollama(unittest.TestCase):
             cls._stop_proc()
             shutil.rmtree(cls.rt, ignore_errors=True)
             shutil.rmtree(cls.cfg, ignore_errors=True)
+            shutil.rmtree(cls.state, ignore_errors=True)
             raise unittest.SkipTest(
                 "daemon lacks the /w1 pattern surface (need a build with pattern templating)")
         cls.has_fabric = "ai" in pats
@@ -287,13 +318,100 @@ class RealWoollama(unittest.TestCase):
     def tearDownClass(cls):
         cls._stop_proc()
         cls._teardown_env()
-        for d in (cls.rt, cls.cfg):
+        for d in (cls.rt, cls.cfg, getattr(cls, "state", None)):
             if d:
                 shutil.rmtree(d, ignore_errors=True)
 
     def _need_fabric(self):
         if not self.has_fabric:
             self.skipTest("daemon has no fabric backend (older build or fabric not installed)")
+
+    # --- conversations (conv-2 discovery + conv-7 store-backed sessions) -----
+    def test_conversations_recall_transcript_and_delete(self):
+        """The full stateful-session journey cosmic-fabric drives: attach-by-key
+        create → server-side recall on turn 2 (no client history) → discovery via
+        /v1/conversations (key echoed) → transcript via /items → delete. Needs a
+        conversation store (ollama models are stateless-only without one)."""
+        if not _convstore_up():
+            self.skipTest("no conversation store answering at " + CONVSTORE_URL)
+        wool = core.WoollamaClient()
+        # Unique per run: the store may be a long-lived shared service.
+        key = "cosmic-fabric:test-%d-%d" % (os.getpid(), int(time.time()))
+
+        # Turn 1 seeds a fact (attach-by-key creates the conversation)…
+        text, conv = wool.respond(
+            self.model,
+            "Remember this: my favorite color is teal. Reply with one word: noted",
+            key=key, timeout=300)
+        self.assertTrue(conv, "responses returns the conversation handle")
+        self.assertTrue(text, "turn 1 produced a reply")
+        # …turn 2 with the SAME KEY recalls it server-side (we sent no history).
+        recall, conv2 = wool.respond(
+            self.model, "What is my favorite color? Answer with one word.",
+            key=key, timeout=300)
+        self.assertEqual(conv, conv2, "same key continues the same conversation")
+        self.assertIn("teal", recall.lower(), "server-side recall (got: %r)" % recall)
+
+        # Discovery: listed under our key, key echoed on the object.
+        convs = [c for c in wool.conversations(key_prefix=key) if c.get("key") == key]
+        self.assertEqual([c["id"] for c in convs], [conv], "conversation discoverable by key")
+
+        # Transcript read (the resume-on-open path): all four turns, oldest first.
+        msgs = wool.conversation_items(conv)
+        self.assertGreaterEqual(len(msgs), 4, "two user + two assistant turns: %r" % msgs)
+        self.assertEqual(msgs[0][0], "user")
+        self.assertIn("teal", msgs[0][1].lower(), "turn-1 input at the head of the transcript")
+        self.assertTrue(any(r == "assistant" for r, _ in msgs), "assistant turns present")
+
+        # Delete ends the ROUTING HANDLE (the store owns/retains its bytes).
+        self.assertTrue(wool.delete_conversation(conv))
+        self.assertEqual(wool.conversations(key_prefix=key), [], "gone from discovery")
+        self.assertFalse(wool.delete_conversation(conv), "second delete: already gone")
+
+    def test_daemon_session_ops_list_transcript_delete(self):
+        """The panel-facing daemon ops over the same surface: seed one session
+        turn, then sessions_list shows the NAME (prefix stripped, no conv ids at
+        the boundary), session_transcript returns the [role, text] history,
+        session_delete ends it, and an unknown session reads as an empty
+        transcript (never a create)."""
+        if not _convstore_up():
+            self.skipTest("no conversation store answering at " + CONVSTORE_URL)
+        from unittest.mock import patch as _patch
+        session = "test-ops-%d-%d" % (os.getpid(), int(time.time()))
+        mod = _load_daemon()
+        mod.FAB = _NoFabric()
+        mod.log = lambda *a, **k: None
+        pol = {"woollama": {"enabled": True}}
+        with _patch.object(core, "load_policy", lambda: copy.deepcopy(pol)):
+            # Seed a turn under the daemon's key namespace (what stream_run does).
+            core.WoollamaClient().respond(
+                self.model, "Say the word: seeded",
+                key=mod.WOOLLAMA_KEY_PREFIX + session, timeout=300)
+
+            got = mod.handle({"op": "sessions_list"})
+            names = [s["session"] for s in got.get("sessions", [])]
+            self.assertIn(session, names, "seeded session listed by NAME: %r" % names)
+            self.assertNotIn("error", got)
+
+            tr = mod.handle({"op": "session_transcript", "session": session})
+            self.assertEqual(tr["session"], session)
+            self.assertGreaterEqual(len(tr["messages"]), 2, tr)
+            self.assertEqual(tr["messages"][0][0], "user")
+            self.assertIn("seeded", tr["messages"][0][1])
+
+            # Unknown session: empty transcript, NOT an error, NOT a create.
+            tr2 = mod.handle({"op": "session_transcript", "session": "never-existed"})
+            self.assertEqual(tr2["messages"], [])
+            self.assertNotIn("error", tr2)
+
+            got = mod.handle({"op": "session_delete", "session": session})
+            self.assertTrue(got["deleted"])
+            got = mod.handle({"op": "sessions_list"})
+            self.assertNotIn(session, [s["session"] for s in got.get("sessions", [])])
+            # Idempotent: deleting again reports deleted:false, no error.
+            got = mod.handle({"op": "session_delete", "session": session})
+            self.assertFalse(got["deleted"])
+            self.assertNotIn("error", got)
 
     # --- transport / discovery ---------------------------------------------
     def test_discovery_prefers_unix_socket(self):

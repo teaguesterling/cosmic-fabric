@@ -65,6 +65,29 @@ sessions through woollama via `wool.respond(..., key="cosmic-fabric:{session}")`
 woollama is down or has no store wired (HTTP 501). `core.WoollamaClient.respond()`
 now raises on non-2xx so that fallback can fire. No new daemon state.
 
+**Done (cosmic-fabric, 2026-07-18) — the conversations surface consumed** (the
+discovery/read/teardown half; turns were already attach-by-key above):
+- `WoollamaClient` grew `conversations(key_prefix=…)` (`GET /v1/conversations`,
+  filtered to our `cosmic-fabric:` namespace via the echoed `key`),
+  `conversation_items(id)` (`GET …/items` → `(role, text)` pairs — the
+  resume-on-open read), and `delete_conversation(id)`.
+- Daemon ops `sessions_list` / `session_transcript` / `session_delete`: the panel
+  drives everything by session NAME; conversation ids never cross the daemon
+  boundary. A transcript read is list+filter-by-key, **never** an attach-POST (a
+  read must not create). Unknown session ⇒ empty transcript, not an error.
+- Gated integration coverage (`test_integration.RealWoollama`): the full journey
+  live against a real `woollamad` + store — attach-by-key create → server-side
+  recall on turn 2 → discovery (key echoed) → transcript → delete — plus the
+  daemon ops end-to-end. Skips cleanly when no store answers.
+
+**Done (same branch) — the panel UI slice:** `session.rs` grew a Resume picker
+(header button → card listing the daemon's `sessions_list`, newest first) with
+resume-on-open (`session_transcript` → chat bubbles; backend toggle follows the
+session's model) and per-row delete (`session_delete`; deleting the current
+session resets to a fresh one). `daemon.rs` grew the three typed async wrappers +
+wire-shape unit tests. Degrades cleanly: an older daemon / woollama down / no
+store shows an empty picker with the reason — the app is unaffected.
+
 **Operational setup (a runbook, not code) — see
 [`local-ollama-sessions.md`](local-ollama-sessions.md):** the feature is live only
 while a `conversationStore` is wired in woollama's `mcp.json` and a store is
