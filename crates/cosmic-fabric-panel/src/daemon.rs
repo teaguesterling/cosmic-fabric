@@ -133,6 +133,53 @@ pub struct RunResult {
     pub error: Option<String>,
 }
 
+/// One resumable session from the daemon's `sessions_list` op — a woollama
+/// conversation under our `cosmic-fabric:` key namespace, presented by session
+/// NAME (conversation ids never cross the daemon boundary).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct SessionInfo {
+    pub session: String,
+    pub model: Option<String>,
+    pub backend: Option<String>,
+    pub status: Option<String>,
+    pub title: Option<String>,
+    pub updated_at: Option<f64>,
+}
+
+/// The resumable sessions (newest first). An older daemon without the op — or
+/// woollama down / no store — surfaces as `Err`; callers should degrade to
+/// "no picker", not fail the app.
+pub async fn sessions_list() -> Result<Vec<SessionInfo>, String> {
+    let v = call(serde_json::json!({ "op": "sessions_list" })).await?;
+    if let Some(e) = v.get("error").and_then(|x| x.as_str()) {
+        return Err(e.to_string());
+    }
+    let arr = v.get("sessions").cloned().unwrap_or_default();
+    serde_json::from_value(arr).map_err(|e| e.to_string())
+}
+
+/// A session's transcript as `(role, text)` pairs, oldest first — the
+/// resume-on-open read (the store owns the bytes; this only renders them).
+/// An unknown session is an empty transcript, not an error.
+pub async fn session_transcript(session: String) -> Result<Vec<(String, String)>, String> {
+    let v = call(serde_json::json!({ "op": "session_transcript", "session": session })).await?;
+    if let Some(e) = v.get("error").and_then(|x| x.as_str()) {
+        return Err(e.to_string());
+    }
+    let arr = v.get("messages").cloned().unwrap_or_default();
+    serde_json::from_value(arr).map_err(|e| e.to_string())
+}
+
+/// End a session's conversation handle (idempotent — already-gone reports
+/// `Ok(false)`). The backing store owns (and may retain) the bytes.
+pub async fn session_delete(session: String) -> Result<bool, String> {
+    let v = call(serde_json::json!({ "op": "session_delete", "session": session })).await?;
+    if let Some(e) = v.get("error").and_then(|x| x.as_str()) {
+        return Err(e.to_string());
+    }
+    Ok(v.get("deleted").and_then(|x| x.as_bool()).unwrap_or(false))
+}
+
 pub async fn run(pattern: String, input: String) -> Result<RunResult, String> {
     let v = call(serde_json::json!({ "op": "run", "pattern": pattern, "input": input })).await?;
     serde_json::from_value(v).map_err(|e| e.to_string())
@@ -505,6 +552,38 @@ mod tests {
         assert_eq!(wool(true, false).backend_pill(), "\u{25c7} woollama down");
         // routing disabled → an explicit "off" chip (no fabric backend to show)
         assert_eq!(Status::default().backend_pill(), "\u{25cb} woollama off");
+    }
+
+    #[test]
+    fn session_info_parses_daemon_shape() {
+        // The exact shape cosmic-fabricd's `sessions_list` emits (integration-
+        // tested Python-side); integer timestamps land in the f64 field.
+        let v = serde_json::json!([{
+            "session": "chat-1752861000", "model": "ollama/qwen2.5:1.5b",
+            "backend": "store-backed", "status": "idle", "title": null,
+            "updated_at": 1752861000
+        }]);
+        let s: Vec<SessionInfo> = serde_json::from_value(v).unwrap();
+        assert_eq!(s[0].session, "chat-1752861000");
+        assert_eq!(s[0].model.as_deref(), Some("ollama/qwen2.5:1.5b"));
+        assert_eq!(s[0].updated_at, Some(1752861000.0));
+        // A minimal object (absent optional fields) still parses.
+        let s2: Vec<SessionInfo> =
+            serde_json::from_value(serde_json::json!([{"session": "x"}])).unwrap();
+        assert_eq!(s2[0].session, "x");
+        assert!(s2[0].model.is_none());
+    }
+
+    #[test]
+    fn transcript_pairs_parse_from_daemon_shape() {
+        // `session_transcript` emits [[role, text], …] — serde maps the inner
+        // 2-arrays onto (String, String) tuples.
+        let v = serde_json::json!([["user", "hi"], ["assistant", "hello!"]]);
+        let msgs: Vec<(String, String)> = serde_json::from_value(v).unwrap();
+        assert_eq!(msgs, vec![
+            ("user".to_string(), "hi".to_string()),
+            ("assistant".to_string(), "hello!".to_string()),
+        ]);
     }
 
     #[test]

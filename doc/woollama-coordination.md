@@ -80,9 +80,13 @@ discovery/read/teardown half; turns were already attach-by-key above):
   recall on turn 2 → discovery (key echoed) → transcript → delete — plus the
   daemon ops end-to-end. Skips cleanly when no store answers.
 
-Remaining (UI, next slice): the panel session picker / resume-on-open in
-`crates/cosmic-fabric-panel/src/session.rs` consuming `sessions_list` +
-`session_transcript`.
+**Done (same branch) — the panel UI slice:** `session.rs` grew a Resume picker
+(header button → card listing the daemon's `sessions_list`, newest first) with
+resume-on-open (`session_transcript` → chat bubbles; backend toggle follows the
+session's model) and per-row delete (`session_delete`; deleting the current
+session resets to a fresh one). `daemon.rs` grew the three typed async wrappers +
+wire-shape unit tests. Degrades cleanly: an older daemon / woollama down / no
+store shows an empty picker with the reason — the app is unaffected.
 
 **Operational setup (a runbook, not code) — see
 [`local-ollama-sessions.md`](local-ollama-sessions.md):** the feature is live only
