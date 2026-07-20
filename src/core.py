@@ -251,108 +251,13 @@ def extra_to_options(extra):
     return opt
 
 
-# ---------- fabric REST client ---------------------------------------------
-# Where the daemon runs fabric's REST API. fabric --serve defaults --address to
-# ":8080" (= 0.0.0.0, all interfaces) — exposing the API + your keys on the LAN.
-# We always pin it to **loopback**, and by default to a **random free port** (the
-# daemon is fabric's only client + its spawner, so nothing else needs to discover
-# it). The chosen port is persisted so a daemon restart reuses the live fabric
-# instead of orphaning it. Override with COSMIC_FABRIC_ADDRESS=127.0.0.1:PORT.
-
-
-def _free_port():
-    """Ask the OS for an unused loopback TCP port."""
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
-    finally:
-        s.close()
-
-
-def _fabric_responds(addr, timeout=1.0):
-    try:
-        with urllib.request.urlopen(f"http://{addr}/patterns/names", timeout=timeout):
-            return True
-    except Exception:
-        return False
-
-
-def _port_file():
-    base = os.environ.get("XDG_RUNTIME_DIR") or os.path.expanduser("~/.cache/cosmic-fabric")
-    try:
-        os.makedirs(base, exist_ok=True)
-    except OSError:
-        pass
-    return os.path.join(base, "cosmic-fabric.fabric-addr")
-
-
-def resolve_fabric_address():
-    """The fabric --serve address (always loopback). Precedence:
-    1) $COSMIC_FABRIC_ADDRESS (explicit override);
-    2) the port from a prior run, if a fabric still answers there (reuse — no
-       orphaned instance on restart);
-    3) a fresh OS-assigned free port (persisted for next time)."""
-    env = os.environ.get("COSMIC_FABRIC_ADDRESS")
-    if env:
-        return env
-    pf = _port_file()
-    try:
-        prev = open(pf).read().strip()
-        if prev and _fabric_responds(prev):
-            return prev
-    except Exception:
-        pass
-    addr = f"127.0.0.1:{_free_port()}"
-    try:
-        open(pf, "w").write(addr)
-    except OSError:
-        pass
-    return addr
-
-
+# ---------- fabric (vision only) -------------------------------------------
+# Since 0.3.0, woollama owns text inference AND the managed `fabric --serve`; the
+# only direct fabric use left in cosmic-fabric is image runs, which shell out to
+# the `fabric` CLI (`-a`). So this client no longer speaks fabric's REST.
 class FabricClient:
-    def __init__(self, url=None, log=lambda m: None):
-        # Default to the resolved (random/persisted) loopback address.
-        self.url = (url or f"http://{resolve_fabric_address()}").rstrip("/")
+    def __init__(self, log=lambda m: None):
         self.log = log
-
-    def _get(self, path, timeout=5):
-        with urllib.request.urlopen(self.url + path, timeout=timeout) as r:
-            return json.load(r)
-
-    def alive(self):
-        try:
-            self._get("/patterns/names", timeout=2)
-            return True
-        except Exception:
-            return False
-
-    def list_patterns(self):
-        try:
-            return self._get("/patterns/names")
-        except Exception as e:
-            self.log(f"list_patterns failed: {e}")
-            return []
-
-    def assemble_prompt(self, pattern, user_input, variables=None):
-        """Render a pattern's prompt WITHOUT executing it — for handing off to
-        an interactive agent (Claude Desktop/Code). Returns the pattern's system
-        prompt (with {{vars}} substituted) followed by the input. No model run."""
-        d = self._get("/patterns/" + pattern)
-        sysp = d.get("Pattern", "") if isinstance(d, dict) else str(d)
-        for k, v in (variables or {}).items():
-            sysp = sysp.replace("{{" + k + "}}", str(v))
-        return (sysp.rstrip() + "\n\n" + (user_input or "")).strip()
-
-    def list_models(self):
-        """Available models. /models/names returns {"models":[...]}."""
-        try:
-            d = self._get("/models/names")
-            return d.get("models", d) if isinstance(d, dict) else d
-        except Exception as e:
-            self.log(f"list_models failed: {e}")
-            return []
 
     def run_image(self, image_path, question, model, vendor, pattern=None, timeout=300):
         """Vision run: attach an image and ask about it. Shells out to the fabric
@@ -368,82 +273,6 @@ class FabricClient:
         if r.returncode != 0:
             raise RuntimeError((r.stderr or "fabric -a failed").strip()[:400])
         return r.stdout.strip()
-
-    def model_catalog(self):
-        """{vendor: [models]} from /models/names — for the per-pattern picker."""
-        try:
-            d = self._get("/models/names")
-            v = d.get("vendors", {}) if isinstance(d, dict) else {}
-            return v if isinstance(v, dict) else {}
-        except Exception as e:
-            self.log(f"model_catalog failed: {e}")
-            return {}
-
-    def run(self, pattern, user_input, model, vendor, variables=None, options=None,
-            timeout=600, on_chunk=None, model_ctx=None, session=None,
-            context=None, strategy=None, language=None, search=False):
-        """POST /chat (SSE) → accumulated text. If `on_chunk` is given, it's
-        called with each content fragment as it streams. Beyond model/ctx/session,
-        these are all native /chat fields: `variables` ({{vars}} substitution),
-        `context` (a named context prepended), `strategy` (a prompt strategy),
-        `language` (output language code), `search` (model-side web search).
-        Raises on error."""
-        prompt = {
-            "userInput": user_input,
-            "patternName": pattern or "",
-            "model": model,
-            "vendor": vendor,
-            "variables": variables or {},
-        }
-        if session:
-            prompt["sessionName"] = session
-        if context:
-            prompt["contextName"] = context
-        if strategy:
-            prompt["strategyName"] = strategy
-        body = {
-            "prompts": [prompt],
-            "model": model,
-        }
-        if model_ctx:
-            body["modelContextLength"] = model_ctx
-        if language:
-            body["language"] = language
-        body.update(options or {})
-        if search:
-            body["search"] = True  # ChatOptions; after options so it isn't clobbered
-        req = urllib.request.Request(self.url + "/chat", data=json.dumps(body).encode(),
-                                     headers={"Content-Type": "application/json"})
-        out, raw_seen, err = [], 0, None
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            for raw in r:  # SSE: "data: {json}\n\n" (lenient: also bare json lines)
-                line = raw.decode("utf-8", "replace").strip()
-                if not line:
-                    continue
-                if line.startswith("data:"):
-                    line = line[5:].strip()
-                if line == "[DONE]":
-                    break
-                try:
-                    ev = json.loads(line)
-                except json.JSONDecodeError:
-                    if raw_seen < 5:
-                        self.log(f"non-json SSE line: {line[:160]!r}")
-                    continue
-                raw_seen += 1
-                if raw_seen <= 3:
-                    self.log(f"sse[{raw_seen}] type={ev.get('type')!r} keys={list(ev)} clen={len(ev.get('content','') or '')}")
-                if ev.get("type") == "error":
-                    err = ev.get("content") or "fabric error"
-                if ev.get("type") == "complete":
-                    break  # fabric's end-of-stream marker (don't wait for socket close)
-                if ev.get("content"):
-                    out.append(ev["content"])
-                    if on_chunk:
-                        on_chunk(ev["content"])
-        if err:
-            raise RuntimeError(err)
-        return "".join(out).strip()
 
 
 # ---------- woollama router client (OpenAI-compatible) ----------------------
@@ -1371,8 +1200,8 @@ def run_with_tools(pattern, user_input, model, vendor, *,
     if tools is None:
         tools = {}
 
-    # Assemble the system prompt locally (same helper FabricClient uses for
-    # `assemble_prompt`, lifted here so we don't hit fabric for the tool path).
+    # Assemble the system prompt locally (read the pattern's system.md directly,
+    # so we don't hit fabric for the tool path).
     base = patterns_dir or os.path.expanduser("~/.config/fabric/patterns")
     sys_path = os.path.join(base, pattern, "system.md")
     try:

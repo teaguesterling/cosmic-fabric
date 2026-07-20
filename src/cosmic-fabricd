@@ -232,11 +232,6 @@ def handle(req):
         entry["event"].set()
         log(f"tool_confirm id={rid} approved={approved}")
         return {"ok": True}
-    if op == "fabric_url":
-        # Deprecated: cosmic-fabric no longer runs its own `fabric --serve` — fabric
-        # lives behind woollama (reachable via woollama's `/fabric/*` proxy). No
-        # direct fabric URL to hand out.
-        return {"url": "", "note": "fabric runs behind woollama; use its /fabric/* proxy"}
     if op == "patterns":
         # Computed live (not cached): woollama's /w1 list can change as its managed
         # fabric hot-reloads or comes up after the daemon, and a stale once-filled
