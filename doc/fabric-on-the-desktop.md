@@ -266,24 +266,18 @@ client. We just haven't publicized it as a surface.
 | `assemble` | render a pattern's prompt (system + input, vars) — **no model run** |
 | `run` (+ `stream`, `broadcast`) | execute → result; stream chunks; broadcast to the panel |
 | `fetch` | URL → markdown (Jina / readability) |
-| `fabric_url` | the live fabric REST URL (loopback) — raw-fabric escape hatch |
 | `subscribe` | receive broadcast results (the panel's live channel) |
 
 **Scriptable now — the `cosmic-fabric` CLI** is a thin client of this socket, so
 scripts/tools get the *orchestrated* deployment (policy, active-set, capability
-rule), not raw fabric:
+rule) via woollama, not raw fabric:
 
 ```sh
 echo "long text" | cosmic-fabric run scribe-summarize   # result
 cosmic-fabric assemble scribe-explain < notes.txt        # rendered prompt
 cosmic-fabric fetch https://example.com                   # page → markdown
 cosmic-fabric patterns                                    # your active-set
-FABRIC_API="$(cosmic-fabric fabric-url)"                  # escape hatch → raw fabric
 ```
-
-Prefer these ops over `fabric_url`: hitting the fabric URL directly **bypasses**
-all the daemon's orchestration. `fabric_url` is only for tools that specifically
-want vanilla fabric's REST API.
 
 ### Where goo fits (when/if it lands)
 

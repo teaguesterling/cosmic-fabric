@@ -104,12 +104,22 @@
   <h1>Fabric on the COSMIC desktop</h1>
   <p class="sub">Feature map &amp; vision — every fabric capability, its desktop usefulness, how we envision it, and status. Interactive companion to <code>fabric-on-the-desktop.md</code>.</p>
 
+  <div style="border-left:3px solid var(--accent-dim);background:#21262b;padding:10px 16px;margin:12px 0;border-radius:var(--radius);font-size:13px">
+    <b>Architecture note (post-0.3.0/0.4.0).</b> This is a dated snapshot. Since then,
+    <b>woollama</b> owns model routing, pattern templating, and the managed
+    <code>fabric --serve</code>; <code>cosmic-fabricd</code> is desktop glue that routes text runs
+    through woollama's <code>/w1</code> (render + infer), <b>not</b> fabric's REST directly, and calls
+    the <code>fabric</code> CLI only for <b>vision</b>. The fabric-surface catalog below is still a
+    useful reference, but the integration now goes through woollama.
+  </div>
+
   <div class="shape">
-    <b>The shape.</b> One daemon (<code>cosmic-fabricd</code>) owns the fabric deployment — the <b>one channel</b>; everything else is a thin socket client. One <b>profile</b> (<code>policy.toml</code>) every surface reads. Three UI surfaces — plus the socket they sit on, a programmatic 4th surface (see the goo appendix).
+    <b>The shape.</b> One daemon (<code>cosmic-fabricd</code>) is the desktop glue — the <b>one channel</b>; everything else is a thin socket client. One <b>profile</b> (<code>policy.toml</code>) every surface reads. Three UI surfaces — plus the socket they sit on, a programmatic 4th surface (see the goo appendix). Text inference now flows through <b>woollama</b> (which owns model routing and the managed <code>fabric --serve</code>); vision shells out to the <code>fabric</code> CLI.
     <pre>  you ─▶ surfaces (loom · kit · session)
             │ unix socket (line-JSON)  ◀── the 4th, programmatic surface
             ▼
-      cosmic-fabricd ─REST▶ fabric --serve ─▶ Ollama / Anthropic / …</pre>
+      cosmic-fabricd ─/w1▶ woollama ─▶ Ollama / Anthropic / …
+                    └─CLI▶ fabric -a  (vision)</pre>
   </div>
 
   <h2>Feature catalog</h2>
@@ -282,10 +292,9 @@
       <tr><td><code>assemble</code></td><td>render a pattern's prompt — no model run</td></tr>
       <tr><td><code>run</code> (+ stream, broadcast, image)</td><td>execute → result; stream; broadcast to panel; vision via image</td></tr>
       <tr><td><code>fetch</code></td><td>URL → markdown (Jina / readability)</td></tr>
-      <tr><td><code>fabric_url</code></td><td>the live fabric REST URL (loopback) — raw-fabric escape hatch</td></tr>
       <tr><td><code>subscribe</code></td><td>receive broadcast results (the panel's channel)</td></tr>
     </table>
-    <p><b>Scriptable now</b> — the <code>cosmic-fabric</code> CLI is a thin client of this socket (orchestrated, not raw fabric): <code>echo text | cosmic-fabric run scribe-summarize</code>, <code>cosmic-fabric assemble … &lt; notes</code>, <code>cosmic-fabric fetch URL</code>, <code>cosmic-fabric patterns</code>. Escape hatch: <code>FABRIC_API="$(cosmic-fabric fabric-url)"</code> (hitting fabric directly bypasses the daemon's orchestration).</p>
+    <p><b>Scriptable now</b> — the <code>cosmic-fabric</code> CLI is a thin client of this socket (orchestrated, not raw fabric): <code>echo text | cosmic-fabric run scribe-summarize</code>, <code>cosmic-fabric assemble … &lt; notes</code>, <code>cosmic-fabric fetch URL</code>, <code>cosmic-fabric patterns</code>. Text inference is orchestrated through woollama's <code>/w1</code>; the daemon shells out to the <code>fabric</code> CLI only for vision runs.</p>
     <p><b>Two arrows.</b> <b>goo → fabric</b>: goo consumes the socket as a client (<code>inference</code>→<code>run</code>, <code>assemble</code>→<code>assemble</code>). <b>fabric → goo</b>: a "Send to goo" destination that hands an artifact to <b>goo's UI</b> (seeded) for interactive routing — <i>the UI, not the socket</i>; goo as a <b>meta-destination</b> ("let goo route it"). So send-to should allow dispatcher destinations, not just terminal sinks. Both arrows optional. Full design: <code>cosmic-goo-integration.md</code>.</p>
   </div>
 

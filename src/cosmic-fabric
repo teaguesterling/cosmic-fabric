@@ -9,11 +9,6 @@ the curated active-set, the capability rule, context sizing) — not raw fabric.
   cosmic-fabric fetch https://example.com                   # → page as markdown
   cosmic-fabric patterns | fzf                              # your active set
   cosmic-fabric status
-
-`fabric-url` is the escape hatch for talking to the underlying fabric REST API
-directly (loopback) — only if you specifically need vanilla fabric:
-
-  FABRIC_API="$(cosmic-fabric fabric-url)"   # e.g. http://127.0.0.1:PORT
 """
 import json
 import os
@@ -29,7 +24,6 @@ USAGE = (
     "  patterns [--all]          your curated active-set (or every pattern)\n"
     "  models                    configured vendors → models\n"
     "  status | ping             daemon + fabric health\n"
-    "  fabric-url                the underlying fabric REST URL (escape hatch)\n"
 )
 
 
@@ -95,9 +89,7 @@ def main(argv):
         return 0 if argv else 2
     cmd, rest = argv[0], argv[1:]
 
-    if cmd in ("fabric-url", "url"):
-        print(call({"op": "fabric_url"}).get("url", ""))
-    elif cmd == "ping":
+    if cmd == "ping":
         print(json.dumps(call({"op": "ping"})))
     elif cmd == "status":
         print(json.dumps(call({"op": "status"}), indent=2))
