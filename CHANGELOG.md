@@ -3,6 +3,32 @@
 All notable changes to cosmic-fabric are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] - 2026-07-19
+
+**Server-side conversations: the panel can now resume sessions.** cosmic-fabric
+consumes woollama's `/v1/conversations` surface end-to-end, on top of the
+attach-by-key turn-driving added in 0.3.0.
+
+### Added
+- **Conversations surface consumption.** `WoollamaClient` gained
+  `conversations(key_prefix=…)` (discovery, filtered to our `cosmic-fabric:`
+  namespace), `conversation_items(id)` (transcript as `(role, text)` pairs — the
+  resume-on-open read), and `delete_conversation(id)`. Daemon ops `sessions_list` /
+  `session_transcript` / `session_delete` drive everything by session **name** —
+  conversation ids never cross the daemon boundary; a transcript read is
+  list+filter-by-key, never an attach-POST (a read must not create). Gated live
+  integration tests (real `woollamad` + a conversation store; two-turn recall).
+- **Session Resume picker (panel).** The Session window lists resumable
+  server-side sessions (newest first), loads a session's transcript on open, and
+  deletes sessions per-row. Degrades cleanly when woollama is down / no store.
+
+### Removed / Fixed (housekeeping)
+- Removed the dead `FabricClient.ensure_serve` — the `fabric --serve` spawner,
+  unused since 0.3.0 (woollama owns managed fabric now).
+- Refreshed the model-catalog comment: woollama #3 shipped, so cloud providers
+  configured in woollama's `inferencers.toml` now appear in the model picker.
+- Fixed a docstring's dangling `FabricClient.ensure_serve` reference.
+
 ## [0.3.0] - 2026-07-01
 
 **woollama is now the text backend; fabric is gone except for vision.** Completes
