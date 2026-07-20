@@ -146,8 +146,9 @@ def _woollama_catalog(pol):
     as models) is excluded — those are patterns, not inference models, and belong in
     the pattern picker, not the model picker. Returns None when woollama is
     off/unreachable (the caller then yields an empty catalog). (Cloud providers
-    woollama doesn't yet enumerate in /v1/models are absent here — see woollama #3;
-    they still route by id, matching the Run-tab picker's existing behavior.)"""
+    appear here only if configured in woollama's inferencers.toml — static `models`
+    or `discover` (woollama #3, shipped); an unconfigured cloud model isn't listed
+    but still routes by id, matching the Run-tab picker's behavior.)"""
     if not core.woollama_enabled(pol):
         return None
     wool = core.WoollamaClient(address=(pol.get("woollama") or {}).get("address"), log=log)

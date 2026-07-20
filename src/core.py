@@ -328,28 +328,6 @@ class FabricClient:
         except Exception:
             return False
 
-    def ensure_serve(self, wait=25):
-        if self.alive():
-            return True
-        env = dict(os.environ)
-        env["PATH"] = os.path.expanduser("~/.local/bin") + os.pathsep + env.get("PATH", "")
-        address = self.url.split("//", 1)[-1]  # "127.0.0.1:PORT" — bind here (loopback)
-        self.log(f"fabric --serve not up; starting it on {address}")
-        try:
-            subprocess.Popen(["fabric", "--serve", "--address", address],
-                             env=env, start_new_session=True,
-                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except Exception as e:
-            self.log(f"failed to spawn fabric --serve: {e}")
-            return False
-        for _ in range(wait * 2):
-            if self.alive():
-                self.log("fabric --serve is up")
-                return True
-            time.sleep(0.5)
-        self.log("fabric --serve did not come up in time")
-        return False
-
     def list_patterns(self):
         try:
             return self._get("/patterns/names")
@@ -616,8 +594,8 @@ class WoollamaClient:
         and return. Otherwise spawn a **keyless** woollamad and wait for its socket.
         Keyless on purpose — an auto-spawned owner instance must not hold a billed
         `ANTHROPIC_API_KEY` (cloud still works when the *discovered* instance has one).
-        Returns True if woollama is reachable afterward. Mirrors
-        `FabricClient.ensure_serve` but never spawns when one is already up."""
+        Returns True if woollama is reachable afterward (discover-first: never spawns
+        when one is already up)."""
         if self.alive():
             return True
         exe = self._locate_woollamad(bin)
