@@ -1,5 +1,13 @@
 # Code review + fabric integration study (2026-05-27)
 
+> **Architecture note (post-0.3.0/0.4.0).** This is a dated snapshot. Since then,
+> **woollama** owns the managed `fabric --serve`; `cosmic-fabricd` routes text runs
+> through woollama's `/w1` (render + infer), **not** fabric's REST directly, and
+> uses the `fabric` CLI only for vision. The "what fabric exposes / we use it?"
+> columns and the "daemon owns all fabric integration" discipline below reflect the
+> pre-woollama design — the fabric surface catalog is still a useful reference, but
+> the integration now goes through woollama.
+
 Done at the "we want this to be *the* fabric frontend" checkpoint. Two parts:
 a concrete code-review pass over what's built, and a study of fabric's real
 surface to find where the integration is shallow.

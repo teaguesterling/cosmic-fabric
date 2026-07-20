@@ -11,9 +11,11 @@ It's both the vision and the roadmap.
 
 ## The shape (recap)
 
-One daemon (`cosmic-fabricd`) owns the fabric deployment — the **one channel**;
-everything else is a thin socket client. One **profile** (`policy.toml`) is the
-shared config every surface reads. Three UI surfaces — and the socket they all
+One daemon (`cosmic-fabricd`) is the desktop glue — the **one channel** every
+surface sits on; it routes text runs to **woollama** (which owns model routing +
+templating and the managed `fabric --serve`) and calls the `fabric` CLI directly
+only for vision. Everything else is a thin socket client. One **profile**
+(`policy.toml`) is the shared config every surface reads. Three UI surfaces — and the socket they all
 sit on is itself a (programmatic) surface; see the goo appendix. The three UIs:
 
 - **Loom** 🧵 — the Workbench (`cosmic-fabric-panel window`): the power + config

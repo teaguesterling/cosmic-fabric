@@ -20,7 +20,8 @@ lands on your clipboard (with a View/Edit notification).
 | Need | For |
 |---|---|
 | **COSMIC desktop** (pop-launcher) | the launcher surface |
-| **`fabric`** on `PATH` (`~/.local/bin`) | the engine (patterns + model routing) |
+| **woollama** (`woollamad`) | the inference router — text backend for every run (routing + pattern templating; owns the managed fabric). Auto-spawned keyless if not already running |
+| **`fabric`** on `PATH` (`~/.local/bin`) | the pattern library (woollama manages its server); also the vision path (`fabric -a`) |
 | **`wl-clipboard`** (`wl-paste`, `wl-copy`) | capture selection / deliver result |
 | **`python3`** ≥ 3.11 | the launcher + daemon (uses stdlib `tomllib`) |
 | `notify-send` (libnotify) | notifications (View/Edit buttons) |
@@ -45,7 +46,9 @@ pkill cosmic-launcher # reload the launcher so it picks up the plugin
 - a starter `~/.config/cosmic-fabric/policy.toml` (only if you don't already have one).
 
 The daemon (`cosmic-fabricd`) starts automatically the first time you use the
-launcher; it also makes sure `fabric --serve` is running.
+launcher; it also makes sure the **woollama** backend is up — discovering a live
+woollama, or auto-spawning a keyless one — and woollama in turn owns the managed
+`fabric --serve`.
 
 ## Using it
 
@@ -144,9 +147,10 @@ bin = "/opt/ollama/bin/ollama"
 url = "http://localhost:11434"
 warn_below_gpu = 99   # notify if an Ollama run lands below this % on the GPU
 
-# Optional: route inference (and stateful Local chat) through the woollama router.
+# The woollama backend. woollama is the text backend (routing + templating) and is
+# enabled by default; set enabled=false only to hard-disable it (no text runs).
 [woollama]
-enabled = false        # true → plain runs + Local sessions go through woollama
+enabled = true         # false → hard-disable the woollama backend
 # address = "host:port" # override discovery (default: $XDG_RUNTIME_DIR/woollama.sock)
 ```
 
@@ -168,15 +172,19 @@ enabled = false        # true → plain runs + Local sessions go through woollam
 the daemon's future model-lifecycle role; `warn_below_gpu` sets the spill-warning
 threshold.
 
-**`[woollama]`** *(optional)* — when `enabled`, plain runs route their inference
-through the [woollama](https://github.com/teaguesterling/woollama) router (fabric
-assembles the prompt, woollama infers), and **Local** chat sessions become
-*stateful* via woollama's conversation store (otherwise they're one-shot). Off by
-default; everything falls back to fabric automatically when woollama is unreachable
-or unconfigured, so enabling it never breaks a run. `address` overrides discovery
-(default: woollama's owner-only Unix socket at `$XDG_RUNTIME_DIR/woollama.sock`).
-Standing up stateful Local sessions — the conversation store plus the `systemd`
-units — is covered in the runbook,
+**`[woollama]`** — woollama is the **text backend**, enabled by default: every
+plain run renders its pattern on woollama's `/w1` and infers there, and **Local**
+chat sessions run through woollama too (its `/v1` responses surface, attach-by-key).
+woollama owns both model routing and pattern templating, backed by the managed
+[fabric](https://github.com/danielmiessler/fabric) server it supervises (see
+[woollama](https://github.com/teaguesterling/woollama)). There is
+**no fabric fallback**: if woollama is unreachable a text run errors — which is why
+`cosmic-fabricd` auto-spawns a keyless woollamad when it can't find a live one. Set
+`enabled = false` only to hard-disable the backend. **Local** chat sessions are
+*stateful* when a woollama conversation store is wired (otherwise one-shot).
+`address` overrides discovery (default: woollama's owner-only Unix socket at
+`$XDG_RUNTIME_DIR/woollama.sock`). Standing up stateful Local sessions — the
+conversation store plus the `systemd` units — is covered in the runbook,
 [`local-ollama-sessions.md`](local-ollama-sessions.md).
 
 ## How it works
@@ -185,16 +193,17 @@ units — is covered in the runbook,
 COSMIC launcher ──"fab"──▶ cosmic-fabric-launcher (thin client)
                                │  selection (wl-paste -p)
                                ▼  unix socket (JSON)
-                          cosmic-fabricd  ──REST /chat (SSE)──▶ fabric --serve ──▶ Ollama / Anthropic
-                               │                                                     │
-                               └── /api/ps placement check ◀────────────────────────┘
+                          cosmic-fabricd ──/w1 run──▶ woollama ──▶ fabric --serve ──▶ Ollama / Anthropic
+                               │        (routing + templating; owns managed fabric)     │
+                               └── /api/ps placement check ◀──────────────────────────────┘
                                ▼
                           result → launcher → clipboard + View/Edit notification
 ```
 
-- **`cosmic-fabricd`** owns the deployment: ensures `fabric --serve` is up, holds the
-  policy, runs patterns over `POST /chat`, checks GPU placement. Socket:
-  `$XDG_RUNTIME_DIR/cosmic-fabric.sock`.
+- **`cosmic-fabricd`** is desktop glue: it holds the policy, routes text runs to
+  **woollama** (which renders the pattern on `/w1` and infers via its managed
+  `fabric --serve`), checks GPU placement, and shells out to the `fabric` CLI for
+  vision. Socket: `$XDG_RUNTIME_DIR/cosmic-fabric.sock`.
 - **The launcher** is a thin client: list patterns, capture selection, ask the daemon
   to run, deliver the result. It auto-spawns the daemon on first use.
 - **Logs:** `~/.cache/cosmic-fabric/daemon.log` and `~/.cache/cosmic-fabric/launcher.log`.

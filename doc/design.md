@@ -1,5 +1,13 @@
 # cosmic-fabric — design
 
+> **Architecture note (post-0.3.0/0.4.0).** This doc predates the woollama split.
+> Today **woollama** owns model routing + pattern templating and supervises the
+> managed `fabric --serve`; `cosmic-fabricd` is desktop glue that routes text runs
+> through woollama's `/w1` (not fabric's REST directly), and calls the `fabric` CLI
+> only for vision. Read the "single fabric deployment" framing and the fabric-REST
+> columns below as the *original* design; the surface/config-coherence goals still
+> hold.
+
 **One sentence:** a COSMIC-native, *widget-level* frontend bundle over a **single
 local fabric deployment** — standalone from goo (a sibling that talks fabric's
 REST) — where the components don't just *run* patterns, they keep one deployment's
@@ -9,7 +17,8 @@ REST) — where the components don't just *run* patterns, they keep one deployme
 
 The center of gravity is one config trio every component agrees on:
 
-- one `fabric --serve` instance (the engine),
+- one **woollama** instance (model routing + templating) that owns the managed
+  `fabric --serve` (the pattern/inference engine),
 - `~/.config/fabric/.env` (vendors: Ollama URL, Anthropic key) + the `scribe-*` pattern pack,
 - **`~/.config/cosmic-fabric/policy.toml`** — the per-pattern **model/vendor** map
   (the relocated `scribe.pack.toml` manifest; its real owner).
@@ -18,7 +27,7 @@ The center of gravity is one config trio every component agrees on:
 
 | component | surface | job | fabric REST |
 |---|---|---|---|
-| `cosmic-fabric-daemon` | — | owns fabric lifecycle (spawn/health) + holds `policy.toml`; *optionally* a policy-injecting proxy | `GET /config`, proxy `POST /chat` |
+| `cosmic-fabric-daemon` | — | desktop glue: routes text runs through woollama + holds `policy.toml` *(orig: owned fabric lifecycle + optional proxy)* | *(now woollama `/w1`; orig: `GET /config`, proxy `POST /chat`)* |
 | `cosmic-fabric-launcher` | pop-launcher plugin (hotkey) | pick pattern → run on selection → result | `GET /patterns/names`, `POST /chat` |
 | `cosmic-fabric-panel` | COSMIC panel applet | status, quick-run, recent | ping `/config`, `POST /chat` |
 | `cosmic-fabric-settings` | libcosmic window | edit patterns, model mappings, vendors | `GET/POST /patterns/:name`, `GET /models/names` |

@@ -1,8 +1,9 @@
 # Getting started with cosmic-fabric
 
-A complete walkthrough: install the engine, run `fabric --setup` properly
-(vendors, API keys, patterns, strategies), install the COSMIC surfaces, configure
-your profile, and confirm each capability. Budget ~20 minutes.
+A complete walkthrough: install the backend (woollama, which owns the managed
+fabric), run `fabric --setup` properly (vendors, API keys, patterns, strategies),
+install the COSMIC surfaces, configure your profile, and confirm each capability.
+Budget ~20 minutes.
 
 > Already know fabric? Jump to [3 · Install the surfaces](#3--install-the-cosmic-fabric-surfaces).
 > Reference: [`fabric-on-the-desktop.md`](fabric-on-the-desktop.md) (what each feature
@@ -14,14 +15,22 @@ your profile, and confirm each capability. Budget ~20 minutes.
   you ──▶ surfaces (loom · kit · session)
               │  unix socket (line-JSON)
               ▼
-        cosmic-fabricd  ──REST──▶  fabric --serve  ──▶  Ollama (local) / Anthropic / …
-        (owns the deployment)        (the engine)        (the models)
+        cosmic-fabricd  ──/w1──▶  woollama  ──▶  Ollama (local) / Anthropic / …
+        (desktop glue)      (model routing + templating;    (the models)
+                             owns the managed fabric --serve)
+
+        vision only:  cosmic-fabricd ──▶ fabric CLI (fabric -a <image>)
 ```
 
-- **fabric** — the engine (patterns + model routing). You configure it once.
+- **woollama** — the inference router: model routing **and** pattern templating.
+  It owns and supervises the managed `fabric --serve` and serves fabric's pattern
+  library on `/w1/patterns`. It holds the provider API keys.
+- **fabric** — the pattern library. You configure its vendors/keys once with
+  `fabric --setup`; **woollama** then manages its server. cosmic-fabric also calls
+  the `fabric` CLI directly for **vision** (image runs).
 - **Ollama** — local models (text + vision), no API cost.
-- **cosmic-fabricd** — the daemon that owns the fabric deployment; every surface
-  is a thin client of its socket.
+- **cosmic-fabricd** — the desktop-glue daemon; every surface is a thin client of
+  its socket. It routes text runs to woollama and shells out to `fabric` for vision.
 - **surfaces** — the panel/launcher/quick-action (kit), the workbench (loom), the
   chat (session).
 
@@ -29,7 +38,11 @@ your profile, and confirm each capability. Budget ~20 minutes.
 
 - **COSMIC desktop** (this is a COSMIC-native bundle).
 - **fabric** on `PATH` — `go install github.com/danielmiessler/fabric/cmd/fabric@latest`
-  (or a release binary). Check: `fabric --version`.
+  (or a release binary). Check: `fabric --version`. (woollama manages fabric's
+  server; cosmic-fabric only calls the `fabric` CLI directly for vision.)
+- **woollama** — the inference router (`woollamad`), the text backend for every
+  run. cosmic-fabric auto-spawns a **keyless** one if none is running, so a
+  standing instance is optional, but the `woollamad` binary must be installed.
 - **Ollama** running, with at least one text model (e.g. `qwen3:14b-iq4xs`) and,
   for vision, `ollama pull llama3.2-vision`.
 - **wl-clipboard** (`wl-copy`/`wl-paste`) — clipboard + selection.
@@ -37,7 +50,9 @@ your profile, and confirm each capability. Budget ~20 minutes.
 
 ## 2 · Configure fabric — `fabric --setup`
 
-This is the part people skip and regret. `fabric --setup` (alias `fabric -S`) is
+This is the part people skip and regret. fabric's vendors/keys/patterns are what
+**woollama** drives when it runs a pattern, so you still configure fabric here —
+woollama just owns its server afterward. `fabric --setup` (alias `fabric -S`) is
 an **interactive** walk through *every reconfigurable part* of fabric. Run it:
 
 ```sh
@@ -84,7 +99,7 @@ raises rate limits), etc.
 fabric --listvendors      # vendors fabric knows
 fabric -L                 # models actually reachable (i.e. keyed)
 fabric --liststrategies   # should be non-empty after setup
-fabric --serve            # the daemon runs this for you, on a random free loopback port
+fabric --serve            # you don't run this — woollama owns/supervises the managed fabric
 ```
 
 If a vendor isn't in `fabric -L`, its key isn't set — re-run `fabric --setup`.
@@ -187,14 +202,14 @@ The daemon re-reads `policy.toml` per run, so edits take effect immediately.
 - **Quick-action key does nothing** — log out/in; verify under Settings → Keyboard
   → Shortcuts → Custom.
 - **A vendor's models are missing** — its key isn't set; `fabric --setup`.
-- **Is fabric exposed on the network?** The daemon binds `fabric --serve` to
-  **loopback on a random free port** (its REST API holds your API keys, so it must
-  not be LAN-reachable; a random port also avoids collisions). The chosen address
-  is in `$XDG_RUNTIME_DIR/cosmic-fabric.fabric-addr` and reused across daemon
-  restarts. Check it's loopback: `ss -tlnp | grep fabric` should show
-  `127.0.0.1:<port>`, never `*`/`0.0.0.0`. (fabric's own default is `:8080` = all
-  interfaces; we override host + port.) Pin a fixed port with
-  `COSMIC_FABRIC_ADDRESS=127.0.0.1:PORT`; for deliberate LAN access use
-  `--address 0.0.0.0:PORT` **with** `--api-key`.
+- **Is fabric/woollama exposed on the network?** cosmic-fabric no longer runs its
+  own `fabric --serve`, so there's no cosmic-fabric-owned network binding to secure.
+  Inference goes to **woollama**, which holds the provider API keys and by default
+  binds **loopback + an owner-only (0600) unix socket**
+  (`$XDG_RUNTIME_DIR/woollama.sock`). As of woollama 0.8.0 it also supports optional
+  surface auth (`WOOLLAMA_TOKEN`) and **refuses a non-loopback bind without a token**.
+  If none is running, cosmic-fabric auto-spawns a **keyless** woollamad (it strips
+  `ANTHROPIC_API_KEY` from the child's environment). The only fabric process
+  cosmic-fabric starts directly is the short-lived `fabric` CLI for a vision run.
 - **Settings/model changes not taking** — the daemon re-reads per run; for the
   panel's curated list, reopen the popup.

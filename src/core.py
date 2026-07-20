@@ -521,8 +521,9 @@ class _UnixHTTPConnection(http.client.HTTPConnection):
 
 
 def woollama_enabled(pol):
-    """True when the [woollama] policy block opts the plain run path into the
-    router. Defaults off (load_policy seeds enabled=False)."""
+    """True when the [woollama] policy block routes the plain run path through the
+    router. On by default (load_policy seeds enabled=True); set enabled=false in
+    policy.toml to hard-disable routing."""
     return bool((pol.get("woollama") or {}).get("enabled"))
 
 
